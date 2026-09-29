@@ -1,7 +1,7 @@
 # Clipboard Sync — 기술 명세서 (Tech Spec)
 
 > 상태: 설계 확정 (구현 미착수)
-> 작성일: 2026-09-29 / 개정: 2026-09-29 (R2 대용량 본문, 수신 후 삭제, vault 설정)
+> 작성일: 2026-09-29 / 개정: 2026-09-29 (R2 대용량 본문, 수신 후 삭제, vault 설정), 2026-09-29 (advisor 리뷰 반영: 서명·로컬 우선 규칙·RDP 에코·NFC·소스 포맷 변환·.NET 10)
 > 선행 문서: [00-requirements.md](./00-requirements.md) (FR-*, NFR-* 번호는 이 문서를 참조)
 
 ## 1. 아키텍처 개요
@@ -36,10 +36,11 @@ clipboard-sync/
 ├─ docs/                  # 00-requirements, 01-tech-spec, ...
 ├─ protocol/
 │   ├─ PROTOCOL.md        # 바이트 포맷/암호 파라미터의 단일 출처
-│   └─ test-vectors.json  # passphrase→키→암호문, 번들/설정 인코딩 벡터 (Swift/C# 테스트 공용)
+│   ├─ test-vectors.json  # passphrase→키→암호문, 번들/설정 인코딩 벡터 (Swift/C# 테스트 공용)
+│   └─ ref/               # TypeScript 참조 구현: 벡터 생성기 + CLI 테스트 피어 (서버·앱 상호 검증)
 ├─ server/                # Cloudflare Worker + DO (TypeScript, wrangler)
 ├─ mac/                   # Swift 앱 (Xcode project + Swift Package)
-└─ windows/               # .NET 8 솔루션
+└─ windows/               # .NET 10 솔루션
 ```
 
 ## 3. 암호 설계 (NFR-1, FR-7)
@@ -128,7 +129,9 @@ CREATE TABLE config (
   ```
   - 정수는 모두 big-endian. 압축은 v1에서 사용하지 않는다 (D-9).
   - 가능한 경우 text/plain fallback을 포함한다 (단, 파일 항목에는 파일명 텍스트를 넣지 않는다 — 4.5 참조). HTML은 fragment만 저장하고 Windows `CF_HTML` 헤더는 수신 측이 생성한다.
-  - 이미지의 정규 포맷은 **PNG**.
+  - 이미지의 정규 포맷은 **PNG**. 소스 앱이 PNG를 주지 않으면 송신 측이 변환한다: macOS는 TIFF → PNG, Windows는 `CF_DIBV5`/`CF_DIB` → PNG (알파 보존).
+  - **RTF → HTML 변환 (macOS 송신)**: TextEdit/Notes/Pages/Word 등은 HTML 없이 RTF만 pasteboard에 넣는 경우가 많다. HTML 표현이 없고 RTF가 있으면 `NSAttributedString`으로 읽어 HTML fragment로 변환해 전송한다 (plain text fallback은 그대로 포함). Windows 송신은 `HTML Format`이 있으면 사용하고 RTF는 v1에서 변환하지 않는다.
+  - **유니코드 정규화**: 파일 이름과 header의 preview 문자열은 송신 시 **NFC로 정규화**한다. Finder는 한글 파일명을 자모 분리(NFD)로 넘기는 경우가 있어, 그대로 보내면 Windows에서 자모가 분리되어 보인다. 본문 텍스트 자체는 원문을 유지한다 (사용자가 복사한 텍스트를 바꾸지 않는다).
   - 파일 이름은 수신 시 sanitize 한다 (경로 구분자 제거, Windows 예약 문자/이름 `CON`, `NUL` 등 치환, 길이 제한).
 
 ### 4.4 vault 설정 (config)
@@ -163,7 +166,7 @@ CREATE TABLE config (
 | Method / Path | 설명 |
 |---|---|
 | `GET /v1/ws?device_id=&last_seq=` | WebSocket upgrade. 연결 직후 서버가 `hello` 전송 |
-| `PUT /v1/items/{id}/body` | **1단계: 본문 업로드.** 헤더: `X-Device-Id`, `Content-Length`. 본문(binary)은 body 암호문. ≤1.25 MiB는 DO(`bodies`)에, 초과는 Worker가 **R2로 스트리밍** (`FixedLengthStream`), DO에는 메타만 기록. 같은 id 재PUT은 덮어쓰기 (재시도 안전) |
+| `PUT /v1/items/{id}/body` | **1단계: 본문 업로드.** 헤더: `X-Device-Id`, `Content-Length`. 본문(binary)은 body 암호문. ≤1.25 MiB는 DO(`bodies`)에, 초과는 Worker가 **R2로 스트리밍** (`FixedLengthStream`), DO에는 메타만 기록. 커밋 전 같은 id 재PUT은 덮어쓰기 (재시도 안전). **이미 커밋되었거나 purged된 id는 409** (DELETE 뒤에 재시도된 PUT이 삭제된 본문을 되살리는 것을 방지) |
 | `POST /v1/items` | **2단계: 커밋.** 헤더: `X-Item-Id`, `X-Device-Id`, `X-Created-At`. 본문(binary)은 header 암호문. 해당 id의 본문이 있어야 하며, seq 부여 후 broadcast. 응답 `{seq}`. 같은 id 재커밋은 기존 seq 반환 (idempotent) |
 | `GET /v1/items?since=<seq>` | seq 초과 항목 목록 (최대 20개, 만료 제외, purged 여부 포함). 원소: `seq, id, device_id, created_at, header(base64), body_size, purged` |
 | `GET /v1/items/{id}/body` | body 암호문 (스트리밍). 404=없음/만료, **410=purged(수신 후 삭제됨)** |
@@ -180,7 +183,7 @@ CREATE TABLE config (
   - `{"t":"item","seq","id","device_id","created_at","header":"<b64>","body_size","inline_body":"<b64>|null"}` — body 암호문이 32KB 이하면 inline (2초 목표, NFR-2). 업로드한 기기의 소켓에는 보내지 않는다.
   - `{"t":"body_purged","id":"<b64>"}` — 다른 기기가 적용을 마쳐 본문이 삭제됨. 클라이언트는 해당 항목을 "서버에서 삭제됨"으로 표시 (로컬 캐시가 있으면 복원 가능).
   - `{"t":"config","version":N,"blob":"<b64>"}`
-- 클라이언트→서버: 없음. Heartbeat는 DO **auto-response**(`"ping"`→`"pong"`)로 처리해 DO를 깨우지 않는다.
+- 클라이언트→서버: 없음. Heartbeat는 DO **auto-response**(`"ping"`→`"pong"`)로 처리해 DO를 깨우지 않는다. 클라이언트는 **30초마다** `"ping"`을 보내고, **90초간** `"pong"`이 없으면 재연결한다.
 
 ### 5.4 Durable Object 동작
 - SQLite-backed DO + **WebSocket Hibernation API**. R2 binding 보유.
@@ -207,11 +210,12 @@ CREATE TABLE config (
 ### 6.2 송신 흐름
 1. 클립보드 변경 감지 → 에코 마커 확인(6.4) → 표현 수집 → **4.5 판별/크기 규칙 적용**
 2. 번들 인코딩 → header/body 암호화 → `PUT /v1/items/{id}/body` → `POST /v1/items`
-3. 실패 시 지수 백오프 재시도(최대 3회, PUT/POST 모두 idempotent), 이후 알림. 대용량은 진행률 표시.
+3. 실패 시 지수 백오프 재시도(최대 3회, PUT/POST 모두 idempotent). 네트워크 오류로 끝내 실패하면 **가장 최근 항목 1개만 `pending`으로 보관**(더 새로운 복사가 이전 pending을 대체)하고 재연결 시 재전송한다. 알림은 재시도가 모두 실패한 시점에 한 번만 띄운다. 일시정지·send off·타입 off 때문에 보내지 않은 복사는 pending으로 만들지 않는다. 대용량은 진행률 표시.
 
 ### 6.3 수신 흐름
 1. `item` 이벤트(또는 재접속 후 `GET /v1/items?since=last_seq`) 수신 → header 복호화 → 목록 갱신
 2. 자기 기기 항목이 아니고, receive가 켜져 있고, 일시정지가 아니고, **항목의 종류가 현재 config에서 허용**되고, `purged`가 아니면 → 대상 후보. 후보 중 **가장 높은 seq 하나만** body를 받아 복호화 → 클립보드 적용 (FR-6). 더 새 항목이 도착하면 진행 중인 이전 다운로드는 취소한다.
+   - **로컬 우선 규칙 (FR-6)**: 재접속·앱 재시작·일시정지/전체 off 해제 직후의 catch-up에서, 로컬 클립보드가 비어 있지 않고 그 정규화 해시가 **우리가 마지막으로 쓰거나 보낸 항목의 해시와 다르면** 사용자가 새로 복사한 것으로 보고 **원격 항목을 적용하지 않고 목록에만 반영**한다 (오프라인 중 복사한 더 새로운 내용을 덮어쓰지 않기 위함). 업로드 대기 중인 `pending` 항목(6.2-3)이 있으면 catch-up 적용 판단보다 먼저 업로드한다. 재부팅 직후처럼 클립보드가 비어 있으면 일반 규칙대로 최신 항목을 적용한다. 연결 중 도착하는 라이브 이벤트는 서버 seq 순서대로 항상 적용한다.
 3. 적용 성공 후, **항목의 kinds에 image 또는 files가 있으면** `DELETE /v1/items/{id}/body`를 호출한다 (수신 후 삭제, FR-5). 복호화한 내용은 로컬 캐시 `incoming/<item_id>/`에 24시간(최대 200 MiB, LRU) 보관한다. 텍스트 항목은 삭제하지 않는다.
 4. 첫 실행/페어링 직후에는 `last_seq`를 현재 최신으로 초기화해 **과거 항목을 자동 적용하지 않는다**.
 5. 복호화 실패(AAD 불일치 등)는 항목을 폐기하고 오류 로그.
@@ -223,7 +227,8 @@ CREATE TABLE config (
 - **1차: 비공개 마커.** 원격 항목을 클립보드에 쓸 때 `item_id`를 담은 private 타입을 함께 기록하고, 감시자는 이 타입이 있는 변경을 무시한다.
   - macOS: 커스텀 UTI `com.tobylee.clipsync.item`
   - Windows: `RegisterClipboardFormat("ClipSyncItemId")`
-- **2차: 콘텐츠 해시 dedupe** (OS의 표현 재합성으로 해시가 흔들릴 수 있어 보조 수단).
+- **2차: 콘텐츠 해시 dedupe (필수 방어)**. 마지막 송·수신 항목 5개의 해시를 60초간 보관하고, 같은 해시의 변경은 업로드하지 않는다. OS가 표현을 재합성하거나 줄바꿈을 바꿀 수 있으므로 해시는 **정규화 후** 계산한다: 텍스트/HTML은 CRLF→LF, 끝의 NUL 제거, NFC; 이미지는 디코드한 픽셀 데이터; 파일은 (정규화된 이름, 크기, 내용) 목록.
+- **RDP 클립보드 리디렉션 주의 (클라우드 Windows 환경)**: RDP는 Mac과 원격 Windows의 클립보드를 자체적으로 동기화한다. 이때 (a) 우리 앱과 무관하게 붙여넣기가 성공해 테스트가 오통과할 수 있고, (b) private 마커(커스텀 UTI/등록 포맷)는 RDP를 통과하지 못해 Windows가 방금 적용한 항목이 Mac 클립보드로 되돌아가 Mac 앱이 다시 업로드하는 **에코 루프**가 생길 수 있다. 따라서 해시 dedupe는 보조가 아니라 필수 방어이며, 개발·테스트는 RDP 클라이언트의 클립보드 리디렉션을 **끈 상태**를 기본으로 하고, 켠 상태의 에코 루프 테스트를 별도로 수행한다 (plan M4/M7).
 
 ### 6.5 재연결 (NFR-3)
 - 지수 백오프 + jitter (1s → 최대 60s). 성공 시 `last_seq` 기준 catch-up 후 6.3 적용.
@@ -235,6 +240,8 @@ CREATE TABLE config (
 ## 7. macOS 앱
 
 - 형태: `LSUIElement` 메뉴바 앱 (`NSStatusItem`), SwiftUI 메뉴 + AppKit. **App Sandbox 비활성** (개인 설치용). 로그인 시 자동 시작은 `SMAppService.mainApp`.
+- **서명 (권한 유지에 필수)**: 개인 설치용이라 공증·배포는 하지 않지만 **안정적인 서명 ID로 서명한다** — 무료 Apple Development 인증서(개인 팀) 또는 자체 서명 코드 서명 인증서. ad-hoc/무서명 빌드는 재빌드할 때마다 코드 정체성(designated requirement)이 달라져 pasteboard 허용, 파일 접근(TCC), Keychain 항목 접근이 초기화되고 프롬프트가 반복될 수 있다. 어느 ID를 쓸지는 M0에서 정하고, S-2에서 재빌드 후 권한 유지를 검증한다 (D-22).
+- **배포 타겟**: 최소 macOS 14 (`SMAppService` 등 사용 API 기준; S-2에서 확정). pasteboard 프라이버시 신규 API(`accessBehavior`, `detect*`)는 실제 SDK에서 도입 버전을 확인해 **`#available` 게이트**로 감싸고, 미지원 OS에서는 기존 방식으로 동작한다. 개발 기기는 macOS 26 (Darwin 25.x).
 - **메뉴 구성 (FR-4)**
   ```
   ● 연결됨 · 동기화 켜짐 ✓
@@ -249,6 +256,7 @@ CREATE TABLE config (
   로그인 시 자동 시작 ✓ · 종료
   ```
 - 감시: `NSPasteboard.general.changeCount`를 **약 250ms 타이머(tolerance 포함)** 로 폴링. 변경 시 6.2 실행.
+- 소스 포맷 수집: HTML → (없으면) RTF를 `NSAttributedString`으로 HTML 변환 → plain text 순. 이미지는 PNG → (없으면) TIFF를 PNG로 변환. 규칙은 4.3.
 - **pasteboard 개인정보 보호 (macOS 26 대응)**
   - macOS 26부터 사용자 조작과 무관한 프로그램적 pasteboard **내용 읽기**는 시스템 경고/권한 프롬프트 대상이며, `NSPasteboard.accessBehavior`(허용/거부/질문), 데이터를 읽지 않고 종류만 확인하는 `detect*` API가 추가된다. `changeCount` 폴링 자체는 프롬프트 대상이 아니다. (출처: [Michael Tsai — Pasteboard Privacy Preview in macOS 15.4](https://mjtsai.com/blog/2025/05/12/pasteboard-privacy-preview-in-macos-15-4/), [9to5Mac](https://9to5mac.com/2025/05/12/macos-16-clipboard-privacy-protection/))
   - 따라서 (a) **온보딩**에서 첫 읽기를 유도하고 시스템 설정의 "다른 앱에서 붙여넣기"를 **허용**으로 바꾸도록 안내, (b) 읽기 전에 `detect*`/타입 목록으로 읽을 가치가 있는 타입인지 먼저 판별 (타입이 꺼져 있으면 내용을 읽지 않고 무시), (c) 메뉴에 **"권한 필요" 상태**와 시스템 설정 열기 버튼.
@@ -259,7 +267,7 @@ CREATE TABLE config (
 
 ## 8. Windows 앱
 
-- .NET 8, **WinForms `NotifyIcon`** 트레이 앱 (WinUI 3는 트레이 미지원). self-contained 단일 파일 publish. 로그인 시 자동 시작은 `HKCU\...\Run`.
+- .NET 10 (LTS), **WinForms `NotifyIcon`** 트레이 앱 (WinUI 3는 트레이 미지원). self-contained 단일 파일 publish. 로그인 시 자동 시작은 `HKCU\...\Run`.
 - 트레이 메뉴: Mac과 동일한 상태/일시정지/보내기·받기/최근 항목 + **"동기화 대상 / 최대 크기"는 읽기 전용 표시** ("Mac에서 변경").
 - 감시: 메시지 전용 윈도우 + `AddClipboardFormatListener` → `WM_CLIPBOARDUPDATE`. 클립보드 접근은 **STA 스레드**, `OpenClipboard` 실패 시 재시도+백오프(5회, 20ms→320ms), ~100ms debounce.
 - 표현 매핑
@@ -269,6 +277,7 @@ CREATE TABLE config (
   | html | `HTML Format` (`CF_HTML`; `StartHTML/EndHTML/StartFragment/EndFragment` 바이트 오프셋 헤더를 생성) |
   | image | `PNG` 등록 포맷 + `CF_DIBV5` **둘 다** 기록, 읽을 때는 PNG 우선 |
   | files | `CF_HDROP` (`%LOCALAPPDATA%\ClipboardSync\incoming\<item_id>\` = 로컬 캐시, Mac과 동일 정리 정책) |
+- 읽을 때 `PNG`가 없고 `CF_DIBV5`/`CF_DIB`만 있으면 PNG로 변환해 전송한다 (알파 보존, 4.3).
 - 우리가 쓰는 클립보드 항목에는 `CanUploadToCloudClipboard = 0`을 지정한다.
 - 대용량 업로드/다운로드는 `HttpClient` 스트리밍(진행률 표시). 자격 증명: Credential Manager (DPAPI). 토스트 알림은 비패키지 앱이므로 AUMID 등록 필요 — 구현 시 확인.
 
@@ -283,16 +292,18 @@ CREATE TABLE config (
 | passphrase 오프라인 추측 | 생성형 고엔트로피 passphrase(~90bit) + PBKDF2 600k, 사용자 지정은 24자+ |
 | 기기 분실 | Keychain/Credential Manager 보호. 키 교체: passphrase 변경 → 새 `VAULT_ID` 등록 → 서버 데이터 폐기 |
 | Windows 클라우드/히스토리 유출 | `CanUploadToCloudClipboard=0` |
+| RDP 클립보드 리디렉션(클라우드 Windows)으로 인한 에코 루프·테스트 오통과 | 정규화 해시 dedupe 필수, 테스트는 리디렉션 off 기본 + 별도 에코 루프 테스트 |
 | 비밀번호 관리자 항목 | v1 제외. 일시정지로 수동 대응 |
 
 ## 10. 테스트 전략
-- **공용 테스트 벡터** (`protocol/test-vectors.json`): passphrase → 키들 → 고정 nonce 암호문, 번들 인코딩 바이트, config 암호문(AAD 포함). Swift와 C# 테스트가 같은 파일을 읽는다.
-- 서버 (`vitest` + `@cloudflare/vitest-pool-workers`): 인증/allowlist, seq 단조성, 20개 cap(R2 객체 삭제 포함), 24h 만료(alarm), idempotent PUT/POST, 51 MiB 초과 413, 커밋 없는 PUT 고아 정리, **DELETE body 후 GET=410 및 `body_purged` 이벤트**, config `If-Match` 충돌, 큰 본문의 R2 스트리밍 경로.
-- 클라이언트 단위: 번들 인코드/디코드, 4.5 타입 판별 (파일 off 시 파일명 폴백 없음, 이미지 off 시 텍스트만 남김), sanitize, CF_HTML 오프셋, 에코 방지, config fail-closed.
-- 수동 E2E 매트릭스: {텍스트, 리치 텍스트, PNG(소형/대형), 파일 1개/여러 개, 20MB 초과} × {Mac→Win, Win→Mac} × {타입 on/off, 온라인, 오프라인 후 재접속, 슬립/웨이크, 일시정지, 방향 토글} + 적용 후 서버 본문 삭제 확인.
+- **공용 테스트 벡터** (`protocol/test-vectors.json`): passphrase → 키들 → 고정 nonce 암호문, 번들 인코딩 바이트, config 암호문(AAD 포함). Swift와 C# 테스트가 같은 파일을 읽는다. TypeScript 참조 구현(`protocol/ref`)은 벡터 생성기이자 **CLI 테스트 피어**(서버 WebSocket 테스트 클라이언트, 앱과의 상호 검증 상대)를 겸한다.
+- 서버 (`vitest` + `@cloudflare/vitest-pool-workers`): 인증/allowlist, seq 단조성, 20개 cap(R2 객체 삭제 포함), 24h 만료(alarm), idempotent PUT/POST, **커밋·purged된 id 재PUT은 409**, 51 MiB 초과 413, 커밋 없는 PUT 고아 정리, **DELETE body 후 GET=410 및 `body_purged` 이벤트**, config `If-Match` 충돌, 큰 본문의 R2 스트리밍 경로.
+- 클라이언트 단위: 번들 인코드/디코드, 4.5 타입 판별 (파일 off 시 파일명 폴백 없음, 이미지 off 시 텍스트만 남김), sanitize, CF_HTML 오프셋, 에코 방지(해시 정규화: CRLF/LF, 끝의 NUL, NFC), config fail-closed, NFC 정규화, RTF→HTML·TIFF→PNG·DIB→PNG 변환, 로컬 우선 규칙(pending 업로드 → catch-up 적용 생략).
+- 수동 E2E 매트릭스: {텍스트, 리치 텍스트(HTML, 그리고 **RTF만 제공하는 Mac 앱: TextEdit/Notes/Pages/Word**), PNG(소형/대형), **TIFF/DIB만 제공하는 이미지**, 파일 1개/여러 개, **한글 파일명(Finder NFD 원본)**, 20MB 초과} × {Mac→Win, Win→Mac} × {타입 on/off, 온라인, 오프라인 후 재접속, 슬립/웨이크, 일시정지, 방향 토글} + 적용 후 서버 본문 삭제 확인.
+- 추가 시나리오: (a) RDP 클립보드 리디렉션 **off**로 전체 매트릭스, (b) 리디렉션 **on**에서 에코 루프(무한 재업로드) 없음, (c) 오프라인 중 로컬에서 새로 복사 후 재접속 시 덮어쓰지 않고 pending이 먼저 업로드됨, (d) Mac 앱 재빌드 후 권한 프롬프트 재발 없음.
 
 ## 11. 구현 단계 제안
-1. `protocol/` 확정 + 테스트 벡터 (Swift/C# 양쪽 통과)
+1. `protocol/` 확정 + 테스트 벡터 + TypeScript 참조 구현/CLI 테스트 피어 (Swift/C# 양쪽 통과)
 2. 서버 (Worker + DO + R2) + 단위 테스트
 3. macOS 앱 최소 기능 (텍스트 송수신) → 설정 메뉴(config) → 이미지/파일 → 수신 후 삭제
 4. Windows 앱 동일 순서 (설정은 읽기 전용)
@@ -305,7 +316,7 @@ CREATE TABLE config (
 - 비밀번호 관리자 항목 자동 제외 미지원.
 - 압축 미사용. 도입 시 raw deflate로 통일 (Apple `COMPRESSION_ZLIB`은 raw deflate).
 - 서버 URL은 사용자가 배포한 `*.workers.dev`(또는 커스텀 도메인)를 앱 설정에 입력.
-- **R2 활성화 필요**: 계정에서 R2를 켜야 하고 결제 수단 등록이 필요할 수 있음 (무료 한도 내 예상) — 배포 시 확인.
+- **Cloudflare 요금제 (M0에서 확인)**: 웹 검색 요약 기준으로 SQLite 기반 Durable Object와 Rate Limiting binding은 Workers Free에서도 사용 가능하다 (Free는 DO 스토리지 객체당 1GB / 계정 5GB이나 대용량 본문은 R2에 있어 영향이 작음; [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)). **R2 binding이 Free에서 가능한지는 자료가 엇갈려 미확인**이다. 요금제는 **Workers Free로 확정**(사용자 결정)이며, S-1을 Free에서 수행해 확정한다. Free의 일일 한도(요청 수, DO 실행 시간 등)는 M2에서 실측한다 (WebSocket hibernation과 heartbeat auto-response는 이 한도를 아끼기 위한 설계). R2 활성화에는 결제 수단이 필요할 수 있다.
 
 ## 13. 결정 로그 (Decision Log)
 | ID | 결정 | 대안 | 근거 |
@@ -330,3 +341,11 @@ CREATE TABLE config (
 | D-18 | 파일이 켜져 있지 않으면 파일 항목 전체 무시(파일명 폴백 없음), 이미지 off면 이미지 표현만 제거 | 텍스트로 폴백 | Finder/Explorer가 파일명 문자열을 함께 넣어 의도치 않은 텍스트 전송이 생김 |
 | D-19 | 서버 하드 캡 51 MiB는 상수, 사용자 한도(5–50 MiB)는 송신 클라이언트가 강제 | 서버가 사용자 한도 강제 | 서버가 config를 복호화할 수 없음 |
 | D-20 | 업로드는 2단계: `PUT body`(스트림) → `POST` 커밋(header) | 길이 접두 단일 요청 | 스트림 분할 파싱이 복잡. 커밋된 항목만 이벤트로 노출, 고아는 alarm/lifecycle로 정리 |
+| D-21 | Windows는 **.NET 10 (LTS)** | .NET 8 | .NET 8/9는 2026-11-10 지원 종료 (2026-09 기준 약 6주 남음, [.NET Blog](https://devblogs.microsoft.com/dotnet/dotnet-8-9-end-of-support/)). .NET 10은 2028-11까지 지원 |
+| D-22 | Mac 앱은 **안정적인 서명 ID**(무료 Apple Development 또는 자체 서명 인증서)로 서명, 공증은 안 함. 배포 타겟 명시 + 신규 API `#available` 게이트 | ad-hoc/무서명 | 재빌드마다 코드 정체성이 바뀌어 pasteboard·TCC·Keychain 권한이 초기화됨. D-12 보완 |
+| D-23 | catch-up 시 **로컬 우선**: 사용자가 새로 복사한 로컬 내용이 있으면 원격 항목으로 덮어쓰지 않음. 네트워크 실패한 최신 로컬 항목 1개는 pending으로 보관·재전송 | 항상 최신 seq를 적용 | seq는 커밋된 항목에만 존재해, 오프라인 중 복사한 Y가 재접속 시 더 오래된 X에 덮어써짐. 사용자 승인 완료 (00 FR-6) |
+| D-24 | 정규화 해시 dedupe를 필수 방어로 격상 (CRLF/LF, NUL, NFC, 이미지는 픽셀). RDP 리디렉션 off를 테스트 기본으로 | 마커만 신뢰 | RDP는 클립보드를 자체 동기화하고 private 마커를 전달하지 못해 에코 루프·오통과 가능 |
+| D-25 | 파일명·preview는 송신 시 NFC 정규화 (본문 텍스트는 원문 유지) | 무처리 | Finder의 NFD 한글 파일명이 Windows에서 자모 분리로 보임 |
+| D-26 | 소스 포맷 변환: RTF→HTML(Mac), TIFF→PNG(Mac), DIB/DIBV5→PNG(Windows) | HTML/PNG만 지원 | TextEdit/Notes/Pages/Word는 RTF만, 일부 앱은 TIFF/DIB만 제공해 그대로면 "리치 텍스트/이미지 지원"이 실패 |
+| D-27 | 이미 커밋/purged된 id의 `PUT /body`는 409 | 덮어쓰기 허용 | DELETE 후 재시도된 PUT이 삭제된 본문을 되살리는 것을 방지 |
+| D-28 | WebSocket 하트비트: 클라이언트 30초 ping, 90초 pong 없으면 재연결 | 미정 | 유휴 연결 끊김의 조기 감지 |
