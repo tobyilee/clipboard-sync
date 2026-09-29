@@ -282,7 +282,7 @@ sealed class SyncEngine : IDisposable
         if (seq == lastWrittenSeq) return;   // 우리가 쓴 변경 (D-44)
         if (!CanSend || client is not { } c || uploads is not { } q) return;   // 꺼져 있으면 보내지 않고 pending도 만들지 않는다 (6.2-3)
 
-        var shape = ClipboardIO.GetShape();
+        if (ClipboardIO.GetShape(listener.Handle) is not { } shape) { Log.Error("clipboard busy (OpenClipboard failed)"); return; }
         if (shape.Own) return;
         switch (Media.Classify(shape.HasFiles, shape.HasImage, shape.HasText, Config))
         {

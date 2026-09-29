@@ -96,6 +96,7 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
    - 테스트: Swift 45개, C# 53개(설정 교차 TS↔Swift/C#, R2 경로 이미지 교차 포함). C# PNG를 macOS `sips`가 정상 판독.
    - Mac 앱: 설정 수신(hello/config 이벤트, 최고 version만 수용·저장), 메뉴 "동기화 대상"(이미지·파일)·"미디어 최대 크기" → PUT, 이미지 송신(PNG 우선, TIFF→PNG, 변환·해시·봉인은 메인 스레드 밖), 이미지 적용(PNG+TIFF+마커), 크기 초과 알림(`UNUserNotificationCenter`), "보내는 중…/받는 중…" 상태. **실측:** 이미지 off면 송수신 모두 무시, on 전환 즉시 반영, CLI→Mac PNG 적용, Mac PNG/TIFF 송신(96×64 알파, 6.2 MB R2 경로, 바이트 해시 일치), max=5 전환 즉시 초과 이미지 차단.
    - Windows 앱: 설정 수신·메뉴 읽기 전용 표시, 이미지 송신(PNG > DIBV5 > DIB, 클립보드 닫은 뒤 변환), 적용(PNG + DIBV5, GDI+ 디코드), 적용을 별도 작업으로(대용량 다운로드가 이벤트 처리를 막지 않음), `--selftest`에 이미지 왕복 4항목 추가. Mac에서 컴파일만 확인.
+   - **Cloud PC 1차(2026-09-30):** Win+Shift+S 캡처(395×319) → Mac에 PNG·TIFF로 적용 확인. Mac→Windows 무지개 이미지(seq 101) 전송까지 확인(그림판 붙여넣기·selftest 결과는 사용자 확인 대기). **버그 수정:** Windows가 selftest가 쓴 테스트 PNG를 새 복사로 올림(seq 100, 바이트 동일) — 클립보드를 열지 않고 `IsClipboardFormatAvailable`로 판별해 다른 프로세스가 쓰는 도중(PNG는 있고 마커는 아직)을 봄. 판별·마커 확인을 `OpenClipboard` 안에서 하도록 수정.
    - **서명 사고(2026-09-30):** Apple Development 인증서가 폐기되어 Mac 앱이 "Malware Blocked and Moved to Bin"으로 휴지통 이동 → 자체 서명으로 전환(D-55). 진단: `/usr/bin/log show`(zsh에서 `log`는 다른 명령에 가려짐)에서 amfid `Trust evaluate failure: [leaf Revocation4]`.
 2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.

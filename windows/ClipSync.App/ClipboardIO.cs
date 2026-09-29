@@ -49,11 +49,24 @@ static class ClipboardIO
 
     public static uint SequenceNumber => Native.GetClipboardSequenceNumber();
 
-    public static Shape GetShape() => new(
+    static Shape CurrentShape() => new(
         Native.IsClipboardFormatAvailable(FmtMarker),
         Native.IsClipboardFormatAvailable(Native.CF_HDROP),
         Native.IsClipboardFormatAvailable(FmtPng) || Native.IsClipboardFormatAvailable(Native.CF_DIBV5) || Native.IsClipboardFormatAvailable(Native.CF_DIB),
         Native.IsClipboardFormatAvailable(Native.CF_UNICODETEXT) || Native.IsClipboardFormatAvailable(FmtHtml));
+
+    /// 표현 판별은 **클립보드를 연 상태에서** 한다. 열지 않고 IsClipboardFormatAvailable을 보면 다른 프로세스가 쓰는 도중
+    /// (예: PNG는 들어갔고 마커는 아직)을 보게 되어, 우리가 쓴 항목을 마커 없는 새 복사로 오인한다 (M5a Cloud PC에서 실제 발생).
+    /// 열지 못하면 null (busy).
+    public static Shape? GetShape(IntPtr hwnd)
+    {
+        if (!OpenWithRetry(hwnd)) return null;
+        try { return CurrentShape(); }
+        finally { Native.CloseClipboard(); }
+    }
+
+    /// 자체 테스트용: 연 상태에서 마커를 본다.
+    public static bool HasOwnMarker(IntPtr hwnd) => GetShape(hwnd)?.Own == true;
 
     /// spec 8: OpenClipboard 실패 시 5회, 20ms→320ms 백오프.
     static bool OpenWithRetry(IntPtr hwnd)
@@ -100,6 +113,7 @@ static class ClipboardIO
         if (!OpenWithRetry(hwnd)) { busy = true; return null; }
         try
         {
+            if (Native.IsClipboardFormatAvailable(FmtMarker)) return null;   // 판별 뒤 우리 항목으로 바뀌었으면 읽지 않는다
             var plain = Native.IsClipboardFormatAvailable(Native.CF_UNICODETEXT) ? ReadUnicodeText() : null;
             var html = Native.IsClipboardFormatAvailable(FmtHtml) && GetBytes(FmtHtml) is { } h ? CfHtml.ExtractFragment(h) : null;
             // D-48/D-41: plain text가 없으면 HTML에서 만든다 (RDP를 통과하는 것은 plain text이므로 해시 기준을 맞춘다).
@@ -109,12 +123,13 @@ static class ClipboardIO
         finally { Native.CloseClipboard(); }
     }
 
-    public static RawImage? ReadImage(IntPtr hwnd, out bool busy)
+    public static RawImage? ReadImage(IntPtr hwnd, out bool busy, bool allowOwn = false)
     {
         busy = false;
         if (!OpenWithRetry(hwnd)) { busy = true; return null; }
         try
         {
+            if (!allowOwn && Native.IsClipboardFormatAvailable(FmtMarker)) return null;   // 판별 뒤 우리 항목으로 바뀌었으면 읽지 않는다
             if (Native.IsClipboardFormatAvailable(FmtPng) && GetBytes(FmtPng) is { } png) return new RawImage(png, true);
             if (Native.IsClipboardFormatAvailable(Native.CF_DIBV5) && GetBytes(Native.CF_DIBV5) is { } v5) return new RawImage(v5, false);
             if (Native.IsClipboardFormatAvailable(Native.CF_DIB) && GetBytes(Native.CF_DIB) is { } dib) return new RawImage(dib, false);

@@ -58,7 +58,7 @@ static class SelfTest
             while (notified == 0 && Environment.TickCount64 < until) { Application.DoEvents(); Thread.Sleep(10); }
             return notified > 0 ? null : "no message within 1s";
         });
-        Check("shape sees own marker", () => ClipboardIO.GetShape().Own ? null : "marker not detected");
+        Check("shape sees own marker", () => ClipboardIO.HasOwnMarker(hwnd) ? null : "marker not detected");
         Check("text applied as CRLF (D-47)", () =>
             ClipboardIO.ReadRaw(hwnd)?.Plain == "selftest 한글 🎉\r\nline2" ? null : "got: " + Escape(ClipboardIO.ReadRaw(hwnd)?.Plain));
         Check("CF_HTML fragment round-trip (Korean/emoji offsets)", () =>
@@ -80,7 +80,7 @@ static class SelfTest
             ClipboardIO.ReadFormat(hwnd, Native.CF_DIBV5) is { } d && Imaging.DibToBgra(d) is { } b && b.Pixels.SequenceEqual(ramp.Pixels) ? null : "pixels differ");
         Check("image read prefers PNG, pixel hash stable", () =>
         {
-            var raw = ClipboardIO.ReadImage(hwnd, out _);
+            var raw = ClipboardIO.ReadImage(hwnd, out _, allowOwn: true);
             if (raw is null || !raw.IsPng) return "PNG not preferred";
             return ImageCodec.Normalize(raw) is { } n && Imaging.PixelHash(n.Pixels) == Imaging.PixelHash(ramp) ? null : "hash differs";
         });
