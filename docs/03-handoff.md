@@ -2,7 +2,7 @@
 
 > 작성일: 2026-09-29 (M0 진행 중 갱신, 이전 버전을 대체)
 > 목적: 새 세션/새 작업자가 이 문서와 `docs/00~02`, `docs/spikes.md`만 읽고 **M0의 남은 작업부터 바로 이어갈 수 있게** 현재 상태를 정리한다.
-> 상태 요약: **설계·계획 완료. M0 스파이크 5개 중 S-1, S-2 통과, S-3/S-4/S-5 남음.** 제품 코드는 아직 없음(저장소는 문서 + 빈 디렉터리 골격).
+> 상태 요약: **설계·계획 완료. M0 스파이크 5개 중 S-1~S-4 통과, S-5 부분(off 확인, on/에코 루프 미확인).** 제품 코드는 아직 없음(저장소는 문서 + 빈 디렉터리 골격).
 
 ## 1. 한눈에 보기
 
@@ -12,7 +12,7 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M0 남은 스파이크: S-4(Swift 쪽 먼저) → S-3 → S-5**, 그 뒤 M0 완료 기준 확인 |
+| 다음 작업 | **M0 마무리(환경 준비 plan §2.1) → M1(protocol 벡터 + TS 참조 구현 + CLI 테스트 피어)** |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
@@ -41,9 +41,9 @@
 |---|---|---|
 | S-1 | ✅ 통과 | Workers **Free**에서 R2 binding 동작. `R2.put(key, request.body)` 스트리밍으로 20/50/51 MiB 업·다운로드·삭제 성공, 바이트 일치. 설계 변경 없음(D-15 유지). 스파이크 Worker와 버킷은 삭제함 |
 | S-2 | ✅ 통과 (경고 재현은 미확인) | `accessBehavior`/`detect*`는 macOS **15.4+**(이전 문서의 "26"은 오류). `detect*`는 종류 판별용이 아님 → `types`로 판별. Apple Development ID로 재빌드(코드가 다른 4개 빌드)해도 Keychain·TCC 허용 유지. macOS 26.6.2에서 새 앱이 첫 실행부터 `.alwaysAllow`라 경고 자체는 재현하지 못함 |
-| S-3 | ⏳ 대기 | Windows CF_HTML/PNG+DIBV5/CF_HDROP 읽기·쓰기 (Cloud PC 필요) |
-| S-4 | ⏳ 대기 | Swift ↔ C# PBKDF2/HKDF/AES-GCM 상호운용. **Swift 쪽은 이 Mac에서 바로 가능**, C# 쪽은 Cloud PC에서 실행 |
-| S-5 | ⏳ 대기 | RDP 클립보드 리디렉션 off 동작 (Cloud PC 필요) |
+| S-3 | ✅ 통과 (합성 데이터) | 자가 테스트 전 항목 PASS. 합성 `CF_DIB`는 알파 손실 → DIBV5 우선. 실제 소스(Edge/Explorer/Office) 덤프는 미수집 → M3/M4에서 재검증. 코드·결과는 `spike/s3` 브랜치 |
+| S-4 | ✅ 통과 | Swift ↔ C# PBKDF2/HKDF/AES-GCM 상호운용. 양쪽이 공용 벡터 35개 항목 전부 통과. D-30(HKDF 빈 salt 등) 추가. 벡터는 `protocol/test-vectors.seed.json`, C# 스파이크 코드는 `spike/s4` 브랜치 |
+| S-5 | 🔶 부분 | 리디렉션 off 시 텍스트가 전달되지 않음 확인. on 상태 에코 루프·텍스트 외 형식은 미확인 |
 
 M0 완료 기준(plan §2.2): 5개 스파이크 결과가 `docs/spikes.md`에 기록되고, 설계 변경이 필요하면 spec에 먼저 반영.
 
@@ -59,7 +59,7 @@ M0 완료 기준(plan §2.2): 5개 스파이크 결과가 `docs/spikes.md`에 �
 | .NET SDK | 이 Mac에는 없음(불필요). **Cloud PC에는 설치 필요** |
 | Windows | **Windows 365 Enterprise Cloud PC**, Mac Windows App으로 접속, 관리자 권한 있음. 인바운드 SSH는 불가(Microsoft 관리 네트워크) → 작업은 사용자가 RDP에서 실행하고 결과를 전달 |
 
-### Cloud PC 준비 (사용자가 PowerShell에서 실행, 아직 안 했을 수 있음)
+### Cloud PC 준비 (완료: .NET 10.0.401, git clone, RDP 클립보드 리디렉션 off. 재현용으로 남김)
 ```powershell
 winget install Microsoft.DotNet.SDK.10
 winget install Git.Git
@@ -71,12 +71,10 @@ dotnet --version   # 10.x
 RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipboard 해제 + (필요 시) Intune 정책 확인. **끈 뒤 Mac에서 복사 → Windows 메모장에 붙여 아무것도 안 붙는지 확인**하는 것이 S-5 자체다.
 
 ## 6. 다음에 할 일 (순서)
-1. **S-4 Swift 쪽:** 고정 입력(passphrase, 고정 nonce)으로 PBKDF2(600k)→HKDF(`clipsync/v1/enc|auth`)→AES-256-GCM(AAD 포함)을 수행하고 출력을 기록. CryptoKit/CommonCrypto 사용. 이 값이 이후 `protocol/test-vectors.json`의 씨앗이 된다.
-2. **S-4 C# 쪽:** 같은 입력으로 `Rfc2898DeriveBytes.Pbkdf2`, `HKDF`, `AesGcm` 결과 비교 (Cloud PC).
-3. **S-3:** 작은 WinForms 앱으로 `AddClipboardFormatListener` + CF_HTML/PNG/CF_HDROP 읽기·쓰기.
-4. **S-5:** 리디렉션 off/on 관찰.
-5. 결과를 `docs/spikes.md`에 기록, 설계 변경 시 **spec 먼저** 수정(D-번호 추가).
-6. M0 환경 준비 마무리(plan §2.1): Xcode 프로젝트 설정, .NET 10 확인. 그 뒤 M1(protocol 벡터 + TS 참조 구현 + CLI 테스트 피어).
+1. M0 환경 준비 마무리(plan §2.1): Xcode 프로젝트 설정, Cloud PC의 .NET 10(10.0.401 확인됨) 등. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 M5(Windows 클라이언트) 전에 재확인.
+2. **M1:** `protocol/test-vectors.seed.json`을 정식 `test-vectors.json`으로 확장(번들 인코딩 바이트 포함), TypeScript 참조 구현(`protocol/ref`)과 CLI 테스트 피어.
+3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
+4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증하고 spec 4.5에 폴더/잘라내기 규칙을 결정한다.
 
 ## 7. 알려진 함정 / 주의 (스파이크에서 배운 것 포함)
 - **Mac 권한 테스트는 CLI가 아니라 서명된 `.app`으로.** pasteboard/TCC는 "책임 프로세스"에 귀속돼 셸에서 실행한 바이너리의 결과는 무효다. 번들을 만들고 `codesign` 후 실행하며, **TCC 검증은 Finder 더블클릭으로 직접 실행**(Claude의 `open`은 권한이 Claude 쪽에 귀속될 수 있음).
@@ -119,4 +117,4 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
 ## 11. 새 세션 시작 체크리스트
 1. `git pull` 후 `docs/00~03`, `docs/spikes.md`를 순서대로 읽는다.
 2. `security find-identity -v -p codesigning`, `gh auth status`, `npx wrangler whoami`(`toby@epril.com`인지), `xcode-select -p`(Xcode.app인지) 확인.
-3. 이 문서 §6의 1번(S-4 Swift 쪽)부터 진행하고, 결과를 `docs/spikes.md`에 남긴다.
+3. 이 문서 §6의 1번(M0 마무리)부터 진행하고, 결과를 `docs/spikes.md`에 남긴다.
