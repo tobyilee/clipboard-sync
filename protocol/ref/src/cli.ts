@@ -17,7 +17,14 @@ const show = (r: Awaited<ReturnType<Peer['receive']>>) =>
 if (cmd === 'send' && arg !== undefined) {
   console.log(JSON.stringify(await peer.sendText(arg)));
 } else if (cmd === 'list') {
-  for (const i of await peer.list()) show(await peer.receive(i, null, !i.purged));
+  for (const i of await peer.list()) {
+    try {
+      show(await peer.receive(i, null, !i.purged));
+    } catch (e) {
+      // 복호화 실패 항목은 폐기 (spec 6.3-5). 나머지는 계속 출력한다.
+      console.log(JSON.stringify({ seq: i.seq, id: i.id, error: String((e as Error).message) }));
+    }
+  }
 } else if (cmd === 'delete' && arg) {
   await peer.deleteBody(arg);
   console.log('deleted', arg);

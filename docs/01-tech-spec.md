@@ -234,9 +234,12 @@ CREATE TABLE config (
   - macOS: 커스텀 UTI `com.tobylee.clipsync.item`
   - Windows: `RegisterClipboardFormat("ClipSyncItemId")`
 - **2차: 콘텐츠 해시 dedupe (필수 방어)**. 마지막 송·수신 항목 5개의 해시를 60초간 보관하고, 같은 해시의 변경은 업로드하지 않는다. OS가 표현을 재합성하거나 줄바꿈을 바꿀 수 있으므로 해시는 **정규화 후** 계산한다: 텍스트/HTML은 CRLF→LF, 끝의 NUL 제거, NFC; 이미지는 디코드한 픽셀 데이터; 파일은 (정규화된 이름, 크기, 내용) 목록.
+- **해시 입력 (D-41)**: 정규화한 plain text가 있으면 그것을, 없으면 정규화한 HTML을 해시한다 (RDP를 통과하는 것은 plain text이므로).
 - **RDP 클립보드 리디렉션 주의 (클라우드 Windows 환경)**: RDP는 Mac과 원격 Windows의 클립보드를 자체적으로 동기화한다. 이때 (a) 우리 앱과 무관하게 붙여넣기가 성공해 테스트가 오통과할 수 있고, (b) private 마커(커스텀 UTI/등록 포맷)는 RDP를 통과하지 못해 Windows가 방금 적용한 항목이 Mac 클립보드로 되돌아가 Mac 앱이 다시 업로드하는 **에코 루프**가 생길 수 있다. 따라서 해시 dedupe는 보조가 아니라 필수 방어이며, 개발·테스트는 RDP 클라이언트의 클립보드 리디렉션을 **끈 상태**를 기본으로 하고, 켠 상태의 에코 루프 테스트를 별도로 수행한다 (plan M4/M7).
 
 ### 6.5 재연결 (NFR-3)
+- **catch-up 순서 (D-42)**: 연결 후 WS 이벤트는 `GET /v1/items?since=last_seq`가 끝날 때까지 버퍼링했다가 seq 순으로 처리한다. `seq <= last_seq`이거나 `device_id`가 자기 자신이면 건너뛴다. 첫 실행/페어링 직후 `last_seq`는 `hello.seq`로 초기화한다 (6.3-4).
+- **하트비트**: 텍스트 메시지 `"ping"`을 보낸다 (Swift `sendPing()` 같은 제어 프레임은 DO auto-response와 매칭되지 않는다).
 - 지수 백오프 + jitter (1s → 최대 60s). 성공 시 `last_seq` 기준 catch-up 후 6.3 적용.
 - 슬립/웨이크 이벤트 시 즉시 재연결 (macOS `NSWorkspace.didWakeNotification`, Windows `SystemEvents.PowerModeChanged`).
 
@@ -245,6 +248,7 @@ CREATE TABLE config (
 
 ## 7. macOS 앱
 
+- **식별자/빌드 (D-38)**: 앱 이름 `ClipSync`, 번들 ID `com.tobylee.clipsync`(영구), 서명 ID `Apple Development: tobyilee@gmail.com (P7H3D7D535)`(SHA-1 `6ED556371620F93225B112869C65FCBBF3CDFD6F`), `codesign --identifier com.tobylee.clipsync`. Xcode 프로젝트 대신 SwiftPM 실행 타깃 + 번들 조립·서명 스크립트로 빌드해 고정 경로(`~/Applications/ClipSync.app`)에 설치한다. provisioning profile이 필요한 entitlement(keychain-access-groups 등)는 쓰지 않는다. SwiftPM 리소스(`Bundle.module`)는 쓰지 않고 데이터는 Swift 소스로 내장한다.
 - 형태: `LSUIElement` 메뉴바 앱 (`NSStatusItem`), SwiftUI 메뉴 + AppKit. **App Sandbox 비활성** (개인 설치용). 로그인 시 자동 시작은 `SMAppService.mainApp`.
 - **서명 (권한 유지에 필수)**: 개인 설치용이라 공증·배포는 하지 않지만 **안정적인 서명 ID로 서명한다** — 무료 Apple Development 인증서(개인 팀) 또는 자체 서명 코드 서명 인증서. ad-hoc/무서명 빌드는 재빌드할 때마다 코드 정체성(designated requirement)이 달라져 pasteboard 허용, 파일 접근(TCC), Keychain 항목 접근이 초기화되고 프롬프트가 반복될 수 있다. 어느 ID를 쓸지는 M0에서 정하고, S-2에서 재빌드 후 권한 유지를 검증한다 (D-22).
 - **배포 타겟**: 최소 macOS 14 (`SMAppService` 등 사용 API 기준; S-2에서 확정). pasteboard 프라이버시 신규 API(`accessBehavior`, `detect*`)는 SDK 헤더 기준 **macOS 15.4+** 이므로 **`#available(macOS 15.4, *)` 게이트**로 감싸고, 미지원 OS에서는 기존 방식으로 동작한다 (S-2, D-29). 개발 기기는 macOS 26.6.2, Xcode 27.0.
@@ -267,6 +271,7 @@ CREATE TABLE config (
   - SDK 헤더(`NSPasteboard.h`) 기준: `NSPasteboard.accessBehavior`(`.default`/`.ask`/`.alwaysAllow`/`.alwaysDeny`)와 `detectPatterns`/`detectValues`/`detectMetadata`는 **macOS 15.4+**. 프로그램적 내용 읽기는 `.ask`일 때 사용자 경고 대상이며, 사용자 조작에서 비롯된 붙여넣기 관련 접근은 항상 허용된다. 앱은 첫 경고가 뜬 뒤에야 시스템 설정 목록에 나타나고 그때 상태가 `.default`→`.ask`가 된다. `changeCount` 폴링은 경고 대상이 아니다.
   - `detect*`는 **패턴/메타데이터 감지용**(URL·이메일 등, `detectMetadata`는 첫 항목의 파일 content type 한정)이며 "무슨 종류인지" 사전 판별용이 아니다. **종류 판별은 `pasteboard.types`/`pasteboardItems[].types`로 한다**: 텍스트 `public.utf8-plain-text`, 파일 `public.file-url`(항목마다 1개), 이미지 `public.png`(+`public.tiff`). S-2에서 이 API들은 내용 읽기 없이 동작했다.
   - **실측(macOS 26.6.2, MDM 없음)**: 새 번들 ID의 앱(서명/ad-hoc 모두, Finder 직접 실행 포함)이 첫 실행부터 `accessBehavior == .alwaysAllow`였고 내용 읽기에서 경고가 뜨지 않았으며 "다른 앱에서 붙여넣기" 설정 화면도 보이지 않았다. 따라서 **온보딩은 상태 기반**으로 설계한다: `accessBehavior`를 런타임에 읽어(`#available(macOS 15.4, *)`) `.ask`/`.alwaysDeny`일 때만 메뉴에 **"권한 필요" 상태**와 시스템 설정 열기 버튼을 보이고, 그 외에는 안내 없이 동작한다. 경고 문구·설정 경로는 이 환경에서 재현되지 않아 확정하지 못했다 (다른 OS 버전/기본값에서 `.ask`를 만나면 그때 확인).
+  - **HTML/RTF 처리 (D-39, D-40)**: RTF만 있는 소스는 `NSAttributedString`의 HTML 내보내기 결과에서 `<head>`의 `<style>` 블록을 `<body>` 내부 앞에 붙인 fragment로 전송한다(body만 취하면 서식이 사라진다). 원격 HTML을 쓸 때는 UTF-8 바이트로 기록하고 `<meta charset='utf-8'>`가 없으면 앞에 붙인다(한글·이모지 깨짐 방지).
   - 사전 판별: 읽기 전에 `types`로 종류를 보고, 꺼진 타입이면 내용을 읽지 않고 무시한다 (spec 4.5).
 - 원격 항목 적용: 텍스트/HTML/PNG는 `NSPasteboardItem`으로 다중 표현을 한 번에 기록. 파일은 `~/Library/Caches/<bundle>/incoming/<item_id>/<sanitized name>`에 저장 후 file URL로 기록 (이 폴더가 6.3의 로컬 캐시). 24시간/200 MiB 기준으로 앱 시작 시와 매시간 정리.
 - 대용량 업로드는 `URLSession` upload task(파일에서 스트리밍), 진행률은 메뉴 상태에 표시.
@@ -365,3 +370,9 @@ CREATE TABLE config (
 | D-35 | id/device_id는 어디서나 소문자 hex, blob(header, inline_body, config)은 패딩 있는 표준 base64, Bearer만 패딩 없는 base64url(엄격, 32B) | 혼용 | Swift `Data(base64Encoded:)`가 URL-safe를 거부하는 등 상호운용 오류를 막음. `body_purged.id`의 `<b64>` 표기를 hex로 정정 |
 | D-36 | `hello.seq`는 마지막으로 부여된 seq(`sqlite_sequence`), 만료·cap 후에도 줄지 않음. WS의 `last_seq` 파라미터는 폐지 | `MAX(seq)`, `last_seq` 사용 | 행이 지워지면 MAX가 0으로 떨어져 catch-up이 혼동됨. catch-up은 `GET /items?since=`로 충분 |
 | D-37 | purged 항목도 20개 cap에 포함. 만료는 행+본문 삭제(GET 404). 상태 코드: 411 CL 없음, 412 If-Match 불일치, 404 미커밋 DELETE, 409 본문 없는 커밋, 413 header/config blob 64 KiB 초과 | 미정 | 구현이 암묵적으로 정하면 클라이언트와 어긋남 |
+| D-38 | Mac 앱: 이름 ClipSync, 번들 ID `com.tobylee.clipsync`, Apple Development 서명(SHA-1 고정), SwiftPM 실행 타깃 + 번들 조립 스크립트, `~/Applications` 고정 설치, profile 필요한 entitlement 금지 | Xcode 프로젝트/xcodegen, 자체 서명 ID | xcodegen/tuist 미설치, 의존성 최소. 번들 ID는 Keychain·TCC가 묶이는 영구 값(사용자 확정) |
+| D-39 | RTF→HTML은 내보낸 문서의 `<style>`을 body 내용 앞에 붙인 fragment | body만 취함 / 전체 문서 전송 | `NSAttributedString` 출력은 서식을 head의 클래스 스타일에 둠. body만 취하면 서식 손실, 전체 문서는 4.3의 "fragment만" 규칙과 충돌 |
+| D-40 | 원격 HTML 쓰기는 UTF-8 + `<meta charset='utf-8'>` 보장 | 원문 그대로 | macOS 앱이 charset 없는 `public.html`을 다른 인코딩으로 읽어 한글·이모지가 깨질 수 있음 |
+| D-41 | 해시 입력은 정규화 plain text 우선, 없으면 정규화 HTML | 항상 HTML | RDP 등이 재합성해도 plain text는 유지됨 |
+| D-42 | catch-up 동안 WS 이벤트 버퍼링 후 seq 순 처리, `seq<=last_seq`·자기 기기 항목 건너뜀, 첫 실행은 `last_seq=hello.seq`, 하트비트는 텍스트 `ping` | 즉시 처리 | 조회와 이벤트가 겹쳐 순서·중복이 어긋나는 것을 방지, 과거 항목 자동 적용 방지 |
+| D-43 | passphrase 생성은 EFF large wordlist(7776) 7단어를 `SecRandomCopyBytes` + 거절 샘플링으로 뽑고 ClipSyncCore에 둠 (단어 목록은 Swift 소스로 내장) | 나머지 연산(편향) | 7776은 2의 거듭제곱이 아니라 modulo는 편향됨 |

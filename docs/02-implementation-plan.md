@@ -86,6 +86,7 @@ M2 서버 ──────────────┬────────�
 ## 5. M3 — macOS 앱 (텍스트 우선)
 
 세부 작업 순서
+0. **Swift↔서버 상호운용(UI 전에)**: `ClipSyncCore`에 네트워킹 클라이언트를 만들고 `clipsync-dev`에서 양방향 교차 복호화(Swift 송신→`cli.ts` 수신, 반대도)를 opt-in 통합 테스트로 확인. Authorization 헤더가 URLSession(데이터/WebSocket)에서 실제로 전달되는지, id 소문자 hex, base64url, 텍스트 ping 확인
 1. 메뉴바 앱 골격 (`LSUIElement`, `NSStatusItem`, SwiftUI 메뉴), 상태 모델
 2. 온보딩: passphrase 생성/입력, 서버 URL, 키 파생, Keychain 저장, `vault_id` 표시
 3. `changeCount` 감시 + 텍스트/HTML 읽기 (HTML이 없으면 RTF→HTML 변환) + 에코 마커 + 정규화 해시 dedupe

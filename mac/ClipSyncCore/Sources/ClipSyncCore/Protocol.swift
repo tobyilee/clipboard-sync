@@ -10,6 +10,7 @@ public enum ProtocolError: Error, Equatable {
     case decryptionFailed
     case bundle(String)
     case keyDerivationFailed
+    case randomFailure
 }
 
 // MARK: - 2. key derivation
