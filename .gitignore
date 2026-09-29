@@ -18,8 +18,12 @@ server/dist/
 mac/build/
 mac/DerivedData/
 mac/.build/
+mac/**/.build/
 *.xcuserstate
 xcuserdata/
+
+# Protocol reference (TypeScript)
+protocol/**/node_modules/
 
 # Windows (.NET)
 windows/**/bin/

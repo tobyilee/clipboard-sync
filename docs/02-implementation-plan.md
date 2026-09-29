@@ -61,7 +61,9 @@ M2 서버 ──────────────┬────────�
 산출물
 - `protocol/PROTOCOL.md`: 키 파생, 암호화 단위, AAD 레이아웃, 번들 바이트 포맷, config 포맷을 spec에서 뽑아 **구현의 단일 출처**로 정리
 - `protocol/test-vectors.json`: passphrase → master → enc_key/auth_token/vault_id, 고정 nonce 기반 header/body/config 암호문, 번들 인코딩 바이트, 잘못된 AAD 복호화 실패 케이스
-- `protocol/ref/`: **TypeScript 참조 구현** — 벡터 생성기 + **CLI 테스트 피어** (서버에 WebSocket으로 접속해 항목을 송수신하는 명령줄 도구). M2 서버 테스트와 M3/M4 앱 검증에서 재사용한다
+- `protocol/ref/`: **TypeScript 참조 구현** (의존성 0, Node 24 native type stripping) — 벡터 생성기 + **CLI 테스트 피어의 프로토콜 코어**(키 파생, seal/open, 번들, AAD). 피어의 **WebSocket/HTTP 네트워킹 부분은 서버가 생기는 M2로 옮긴다** (M1에는 붙일 상대가 없음). M2 서버 테스트와 M3/M4 앱 검증에서 재사용한다
+- `mac/ClipSyncCore`(SwiftPM), `windows/ClipSync.Core`(+ 테스트 프로젝트, `net10.0`): 앱 프로젝트가 아닌 **프로토콜 라이브러리**. 같은 `test-vectors.json`을 읽는 테스트를 가진다 (Xcode 앱 프로젝트는 M3)
+- 벡터 확정 전 결정(D-31 폴더 항목 무시, D-32 passphrase 공백 정규화, D-33 UUID 바이트 순서·번들 엄격 규칙)은 spec에 반영 완료
 
 **완료 기준:** 참조 구현이 벡터를 만들고, Swift 패키지와 C# 라이브러리에서 **같은 벡터를 읽는 단위 테스트가 통과**한다 (Mac/Windows 상호운용을 서버·UI 이전에 확정).
 

@@ -62,7 +62,7 @@ enc_key     = HKDF-SHA256(ikm=master, salt=empty, info=UTF8("clipsync/v1/enc"), 
 auth_token  = HKDF-SHA256(ikm=master, salt=empty, info=UTF8("clipsync/v1/auth"), L=32)
 vault_id    = lowercase_hex(SHA-256(auth_token))
 ```
-- passphrase는 **NFKD 정규화 → UTF-8 바이트**로 만든 뒤 PBKDF2에 바이트로 전달한다(문자열 오버로드 사용 금지).
+- passphrase는 **NFKD 정규화 → 공백 정규화 → UTF-8 바이트**로 만든 뒤 PBKDF2에 바이트로 전달한다(문자열 오버로드 사용 금지). **공백 정규화(D-32):** NFKD 뒤에 공백 집합 `{U+0009–U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000}`의 연속을 U+0020 하나로 바꾸고 양끝을 제거한다. 대소문자는 바꾸지 않는다. 언어별 내장 공백 판정(`char.IsWhiteSpace`, JS `\s` 등)은 집합이 달라 쓰지 않고 이 목록을 그대로 구현한다.
 - HKDF salt는 **빈 값**(RFC 5869: 해시 길이만큼의 0바이트와 동일). PBKDF2가 이미 salt를 적용했으므로 추가 salt는 두지 않는다. `info`는 라벨의 UTF-8 원문(NUL 종료 없음). (D-30)
 - 고정 salt는 **passphrase가 고엔트로피일 때만 안전**하다. 첫 기기의 앱이 **passphrase를 생성**한다: EFF long wordlist 7단어 (약 90bit). 사용자는 두 번째 기기에 그대로 입력한다.
 - 직접 정한 passphrase는 24자 이상 + 경고 문구를 조건으로 허용한다.
@@ -80,7 +80,7 @@ vault_id    = lowercase_hex(SHA-256(auth_token))
 ## 4. 데이터 모델 / 번들 포맷
 
 ### 4.1 식별자
-- `item_id`: 클라이언트가 만드는 UUID v4 (16B). 에코 방지 마커와 AAD에도 쓴다.
+- `item_id`: 클라이언트가 만드는 UUID v4 (16B). 에코 방지 마커와 AAD에도 쓴다. **바이트 표현(D-33):** 와이어/AAD/마커는 RFC 4122 순서 16바이트(문자열 `xxxxxxxx-xxxx-…`를 왼쪽부터 hex로 읽은 순서). 문자열·URL·R2 키는 소문자 hex. C# `Guid.ToByteArray()`의 혼합 엔디언 순서를 그대로 쓰지 않는다(`bigEndian: true` 오버로드 또는 직접 생성).
 - `device_id`: 기기 최초 실행 시 생성되는 UUID v4.
 - `seq`: **서버(DO)가 커밋 시점에 부여하는 단조 증가 정수**. 항목 순서와 "최신"의 정의는 오직 seq (클라이언트 시계 사용 금지). `created_at`은 표시용이며 AAD에 포함된다.
 
@@ -147,7 +147,7 @@ CREATE TABLE config (
 
 ### 4.5 타입 판별 / 크기 규칙 (FR-2, FR-3)
 송신 측이 클립보드의 표현들을 다음 순서로 판별한다.
-1. **파일 URL/HDROP이 있으면 파일 항목.** `files=false`이면 항목 전체 무시 (Finder/Explorer가 함께 넣는 파일명 문자열로 폴백하지 않는다). `files=true`이면 body에 파일만 담는다.
+1. **파일 URL/HDROP이 있으면 파일 항목.** `files=false`이면 항목 전체 무시 (Finder/Explorer가 함께 넣는 파일명 문자열로 폴백하지 않는다). `files=true`이면 body에 파일만 담는다. **경로 중 디렉터리가 하나라도 있으면 항목 전체를 무시하고 사용자에게 알린다 (D-31; v1 번들에 디렉터리 엔트리 타입이 없다).**
 2. 그 외 이미지 표현이 있으면: `images=false`이면 이미지 표현을 버리고 text/html 표현이 남으면 그것만 전송, 남는 게 없으면 무시. `images=true`이면 이미지(+남은 텍스트 표현)를 전송.
 3. 텍스트/HTML만 있으면 텍스트 항목.
 
@@ -354,3 +354,6 @@ CREATE TABLE config (
 | D-28 | WebSocket 하트비트: 클라이언트 30초 ping, 90초 pong 없으면 재연결 | 미정 | 유휴 연결 끊김의 조기 감지 |
 | D-29 | pasteboard 신규 API 게이트는 `#available(macOS 15.4, *)`. 종류 판별은 `pasteboard.types`로, 권한 온보딩은 `accessBehavior` 런타임 상태 기반(`.ask`/`.alwaysDeny`일 때만 "권한 필요") | `detect*`로 사전 판별, 항상 권한 안내 온보딩 | S-2: `detect*`는 종류 판별 API가 아님(파일 content type 한정), 이 환경에서 `.alwaysAllow` 기본값이라 경고가 재현되지 않음 |
 | D-30 | HKDF는 빈 salt, `info`는 라벨 UTF-8 원문(NUL 없음), passphrase는 NFKD→UTF-8 바이트로 PBKDF2, `vault_id`는 소문자 hex | HKDF에 고정 salt 추가 | 두 플랫폼 기본 동작이 동일해 상호운용 위험이 가장 낮음. PBKDF2가 이미 salt 적용. S-4 착수 전 모호성 제거 |
+| D-31 | 복사에 폴더가 하나라도 포함되면 항목 전체 무시 + 알림 | 폴더만 건너뛰고 나머지 전송 / v1에서 디렉터리 엔트리 지원 | v1 번들에 디렉터리 타입이 없고 수신 측이 경로 구분자를 제거함. S-3에서 Explorer HDROP이 폴더를 포함함을 확인. 일부만 전달되어 조용히 누락되는 것을 피함(D-18과 같은 방향) |
+| D-32 | passphrase는 NFKD 뒤 공백 집합의 연속을 U+0020 하나로, 양끝 제거(대소문자 유지) | NFKD만 | 두 번째 기기의 공백 오타가 다른 vault_id → 원인 모를 401이 되는 것을 방지. 서버 데이터가 생기기 전(M1)에 확정 |
+| D-33 | UUID 와이어/AAD 표현은 RFC 4122 순서 16B, 문자열/키는 소문자 hex. 번들은 정렬·엄격 규칙(PROTOCOL.md), JSON(header/config)은 비정규 → 벡터는 고정 평문 바이트와 파싱 필드로 비교 | 언어 기본 표현/인코더 출력 바이트 비교 | C# Guid 혼합 엔디언, JSON 이스케이프·키 순서가 언어마다 달라 상호 복호화 실패를 만들 수 있음 |

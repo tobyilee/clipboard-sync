@@ -1,0 +1,11 @@
+{
+  "name": "clipsync-protocol-ref",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript reference implementation of the Clipboard Sync protocol (vector generator + tests). Zero dependencies; requires Node 24+ (native type stripping).",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "gen": "node src/gen-vectors.ts",
+    "test": "node --test test/*.test.ts"
+  }
+}

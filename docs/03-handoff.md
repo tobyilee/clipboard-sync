@@ -2,7 +2,7 @@
 
 > 작성일: 2026-09-29 (M0 진행 중 갱신, 이전 버전을 대체)
 > 목적: 새 세션/새 작업자가 이 문서와 `docs/00~02`, `docs/spikes.md`만 읽고 **M0의 남은 작업부터 바로 이어갈 수 있게** 현재 상태를 정리한다.
-> 상태 요약: **설계·계획 완료. M0 스파이크 5개 중 S-1~S-4 통과, S-5 부분(off 확인, on/에코 루프 미확인).** 제품 코드는 아직 없음(저장소는 문서 + 빈 디렉터리 골격).
+> 상태 요약: **설계·계획 완료. M0 완료(S-1~S-4 통과, S-5 부분). M1 구현 완료(TS/Swift/C#이 같은 벡터 통과).** 제품 코드는 아직 없음(저장소는 문서 + 빈 디렉터리 골격).
 
 ## 1. 한눈에 보기
 
@@ -12,7 +12,7 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M0 마무리(환경 준비 plan §2.1) → M1(protocol 벡터 + TS 참조 구현 + CLI 테스트 피어)** |
+| 다음 작업 | **M1 커밋·push 후 Cloud PC에서 `dotnet test` 1회 → M2 서버** |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
@@ -56,7 +56,7 @@ M0 완료 기준(plan §2.2): 5개 스파이크 결과가 `docs/spikes.md`에 �
 | `gh` | ✅ 계정 `tobyilee` |
 | 서명 ID | ✅ `Apple Development: tobyilee@gmail.com (P7H3D7D535)` (유효 ID는 이것 하나) |
 | Cloudflare | ✅ wrangler 4.143.0, **`toby@epril.com`** 계정(Account ID `8121708927a91d4bab87da8b49fde255`), R2 활성화 완료, workers.dev 서브도메인 **`clipboardsync`** 등록 (서버 URL 형식 `https://<worker>.clipboardsync.workers.dev`). 현재 R2 버킷·Worker 없음(스파이크 리소스 삭제) |
-| .NET SDK | 이 Mac에는 없음(불필요). **Cloud PC에는 설치 필요** |
+| .NET SDK | Cloud PC: 10.0.401 설치됨. **이 Mac: M1부터 `ClipSync.Core` 테스트를 Mac에서 돌리므로 필요**(sudo 불필요): `curl -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh && bash dotnet-install.sh --channel 10.0 --install-dir ~/.dotnet` 후 `export PATH=~/.dotnet:$PATH`. (세션 scratchpad에 설치한 사본은 세션이 끝나면 사라진다) |
 | Windows | **Windows 365 Enterprise Cloud PC**, Mac Windows App으로 접속, 관리자 권한 있음. 인바운드 SSH는 불가(Microsoft 관리 네트워크) → 작업은 사용자가 RDP에서 실행하고 결과를 전달 |
 
 ### Cloud PC 준비 (완료: .NET 10.0.401, git clone, RDP 클립보드 리디렉션 off. 재현용으로 남김)
@@ -71,10 +71,13 @@ dotnet --version   # 10.x
 RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipboard 해제 + (필요 시) Intune 정책 확인. **끈 뒤 Mac에서 복사 → Windows 메모장에 붙여 아무것도 안 붙는지 확인**하는 것이 S-5 자체다.
 
 ## 6. 다음에 할 일 (순서)
-1. M0 환경 준비 마무리(plan §2.1): Xcode 프로젝트 설정, Cloud PC의 .NET 10(10.0.401 확인됨) 등. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 M5(Windows 클라이언트) 전에 재확인.
-2. **M1:** `protocol/test-vectors.seed.json`을 정식 `test-vectors.json`으로 확장(번들 인코딩 바이트 포함), TypeScript 참조 구현(`protocol/ref`)과 CLI 테스트 피어.
+0. **M0 완료, M1 구현 완료(커밋 후 Cloud PC 확인만 남음).** `protocol/PROTOCOL.md`, `protocol/test-vectors.json`(생성물, 직접 수정 금지), `protocol/ref`(TS, `npm run gen` / `npm test`), `mac/ClipSyncCore`(`swift test`), `windows/ClipSync.Core`(+ Tests, `dotnet test windows/ClipSync.sln`)가 같은 벡터를 통과한다. 결정 D-30~D-33 반영.
+   - M1 완료 기준의 "C# 라이브러리 통과"는 Mac에서 확인됨. push 후 **Cloud PC에서 `git pull` → `dotnet test windows\ClipSync.sln` 1회**로 최종 확인.
+   - `swift test`가 `TestingMacros plugin not found`로 실패하면 `rm -rf mac/ClipSyncCore/.build` 후 재실행(다른 툴체인이 만든 캐시 위 증분 빌드에서 간헐 발생, 콜드 빌드는 CLT/Xcode 모두 통과).
+1. **M2 서버** (Worker + DO + R2, `vitest` + `@cloudflare/vitest-pool-workers`): 착수 전 plan §4 확인 + advisor 검토. CLI 테스트 피어의 **네트워킹 부분**(`protocol/ref`)도 여기서 만든다.
+2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
-4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증하고 spec 4.5에 폴더/잘라내기 규칙을 결정한다.
+4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증한다. 폴더 포함 복사는 D-31(항목 전체 무시 + 알림).
 
 ## 7. 알려진 함정 / 주의 (스파이크에서 배운 것 포함)
 - **Mac 권한 테스트는 CLI가 아니라 서명된 `.app`으로.** pasteboard/TCC는 "책임 프로세스"에 귀속돼 셸에서 실행한 바이너리의 결과는 무효다. 번들을 만들고 `codesign` 후 실행하며, **TCC 검증은 Finder 더블클릭으로 직접 실행**(Claude의 `open`은 권한이 Claude 쪽에 귀속될 수 있음).
