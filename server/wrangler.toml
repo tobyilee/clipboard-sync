@@ -1,0 +1,24 @@
+name = "clipsync-dev"
+main = "src/index.ts"
+compatibility_date = "2026-08-22"
+
+[[durable_objects.bindings]]
+name = "VAULT"
+class_name = "Vault"
+
+# Workers Free는 SQLite 기반 DO만 지원한다.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Vault"]
+
+[[r2_buckets]]
+binding = "BODIES"
+bucket_name = "clipsync-dev-bodies"
+
+# 401 남용 방지 (IP 기준). 실패 인증 시에만 호출한다.
+[[ratelimits]]
+name = "AUTH_LIMITER"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+# VAULT_ID는 secret: `wrangler secret put VAULT_ID` (로컬은 .dev.vars, 커밋 금지)

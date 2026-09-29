@@ -70,7 +70,7 @@ M2 서버 ──────────────┬────────�
 ## 4. M2 — 서버 (Worker + Durable Object + R2)
 
 세부 작업 순서
-1. 프로젝트 골격, `wrangler.toml`(DO, R2, secret `VAULT_ID`, rate limit binding, R2 lifecycle 1일)
+1. 프로젝트 골격, `wrangler.toml`(DO, R2, secret `VAULT_ID`, rate limit binding). R2 lifecycle 1일은 버킷 설정이라 `wrangler r2 bucket lifecycle`로 별도 등록
 2. 인증 미들웨어 (상수시간 비교, 401 rate limit, 51 MiB `Content-Length` 검사)
 3. DO 스키마와 `PUT /body`(DO/R2 분기) → `POST /items` 커밋(seq, 20개 cap, broadcast)
 4. `GET /items`, `GET /items/{id}/body`

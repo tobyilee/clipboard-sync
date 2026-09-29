@@ -94,13 +94,15 @@ CREATE TABLE items (
   expires_at  INTEGER NOT NULL,         -- 서버 시각 + 24h
   header      BLOB NOT NULL,            -- 암호화된 header
   body_size   INTEGER NOT NULL,         -- 암호화된 body 바이트 수
-  purged      INTEGER NOT NULL DEFAULT 0  -- 1 = 본문 삭제됨 (수신 후 삭제 / 만료 정리)
+  purged      INTEGER NOT NULL DEFAULT 0  -- 1 = 본문 삭제됨 (수신 후 삭제)
 );
+-- 마지막으로 부여된 seq는 AUTOINCREMENT의 sqlite_sequence로 얻는다 (행이 지워져도 줄지 않음, D-36).
 CREATE TABLE bodies (
   id          BLOB PRIMARY KEY,         -- item_id (PUT 시점에 생성, 커밋 전에는 items 행 없음)
   storage     TEXT NOT NULL,            -- 'do' | 'r2'
   size        INTEGER NOT NULL,
   body        BLOB,                     -- storage='do'일 때만 (BLOB, base64 아님)
+  r2_key      TEXT,                     -- storage='r2'일 때만. 업로드마다 고유 (D-34)
   created_at  INTEGER NOT NULL,
   committed   INTEGER NOT NULL DEFAULT 0
 );
@@ -110,7 +112,7 @@ CREATE TABLE config (
   blob    BLOB NOT NULL                 -- 암호화된 vault 설정
 );
 ```
-- R2 객체 키: `<vault_id>/<hex(item_id)>`. 삭제는 항상 DO가 R2 binding으로 수행한다 (수신 후 삭제, 20개 cap 초과분, 만료, 고아 정리).
+- R2 객체 키: `<vault_id>/<hex(item_id)>/<업로드 nonce 16B hex>` (D-34). `bodies.r2_key`에 기록. 삭제는 항상 DO가 R2 binding으로 수행한다 (수신 후 삭제, 20개 cap 초과분, 만료, 고아 정리).
 - **서버가 볼 수 있는 정보**: 항목 id, 기기 id, 시각, 암호문 크기, seq, purged 여부. **타입·파일명·미리보기·설정 값은 암호문 안에만** 존재한다 (서버는 타입을 알지 못한다).
 
 ### 4.3 header / body 분리
@@ -158,40 +160,42 @@ CREATE TABLE config (
 ## 5. 서버 API (Cloudflare Worker)
 
 ### 5.1 인증 / 남용 방지 (D-5)
-- 클라이언트는 모든 요청에 `Authorization: Bearer <base64url(auth_token)>` 를 보낸다 (WebSocket upgrade 포함).
+- 클라이언트는 모든 요청에 `Authorization: Bearer <base64url(auth_token)>` 를 보낸다 (WebSocket upgrade 포함). **base64url은 패딩 없음, 엄격 디코드, 정확히 32바이트여야 하며 아니면 401** (D-35).
 - Worker는 `SHA-256(auth_token)` 이 wrangler secret **`VAULT_ID`** 와 (상수시간 비교로) 일치하는지 확인한다. **불일치 시 DO/R2를 건드리지 않고 401**. 401은 IP 기준 rate limit (Workers Rate Limiting binding).
-- 본문 업로드는 `Content-Length` 필수, 51 MiB 초과는 인증 통과 후에도 즉시 413 (본문을 읽기 전에 거부).
+- 본문 업로드는 `Content-Length` 필수(없으면 411), 51 MiB 초과는 인증 통과 후에도 즉시 413 (본문을 읽기 전에 거부).
 - 최초 설정: 첫 기기가 passphrase를 생성하면 앱이 `vault_id`를 표시 → 사용자가 `wrangler secret put VAULT_ID` 로 등록. 이후 기기는 passphrase와 서버 URL만 입력.
 - Workers 요청 본문 한도는 플랜에 따라 100MB 이상이라 51 MiB 업로드에 충분하다 (조사 확인).
 
 ### 5.2 엔드포인트
 | Method / Path | 설명 |
 |---|---|
-| `GET /v1/ws?device_id=&last_seq=` | WebSocket upgrade. 연결 직후 서버가 `hello` 전송 |
-| `PUT /v1/items/{id}/body` | **1단계: 본문 업로드.** 헤더: `X-Device-Id`, `Content-Length`. 본문(binary)은 body 암호문. ≤1.25 MiB는 DO(`bodies`)에, 초과는 Worker가 **R2로 스트리밍** (`FixedLengthStream`), DO에는 메타만 기록. 커밋 전 같은 id 재PUT은 덮어쓰기 (재시도 안전). **이미 커밋되었거나 purged된 id는 409** (DELETE 뒤에 재시도된 PUT이 삭제된 본문을 되살리는 것을 방지) |
-| `POST /v1/items` | **2단계: 커밋.** 헤더: `X-Item-Id`, `X-Device-Id`, `X-Created-At`. 본문(binary)은 header 암호문. 해당 id의 본문이 있어야 하며, seq 부여 후 broadcast. 응답 `{seq}`. 같은 id 재커밋은 기존 seq 반환 (idempotent) |
-| `GET /v1/items?since=<seq>` | seq 초과 항목 목록 (최대 20개, 만료 제외, purged 여부 포함). 원소: `seq, id, device_id, created_at, header(base64), body_size, purged` |
+| `GET /v1/ws?device_id=` | WebSocket upgrade. 연결 직후 서버가 `hello` 전송. catch-up은 `GET /v1/items?since=`로 한다 (`last_seq` 파라미터 없음, D-36) |
+| `PUT /v1/items/{id}/body` | **1단계: 본문 업로드.** 헤더: `X-Device-Id`, `Content-Length`. 본문(binary)은 body 암호문. ≤1.25 MiB는 DO(`bodies`)에, 초과는 Worker가 **R2로 스트리밍** (`FixedLengthStream`), DO에는 메타만 기록. 커밋 전 같은 id 재PUT은 덮어쓰기 (재시도 안전). **이미 커밋되었거나 purged된 id는 409**. R2 경로는 Worker가 스트리밍 전 DO `begin`(409 사전 검사, 업로드 nonce 발급)과 후 `finish`(트랜잭션 재검사 후 행 교체, 이전 객체 삭제; 그 사이 커밋/삭제되었으면 방금 쓴 객체를 지우고 409)를 호출한다 (D-34) (DELETE 뒤에 재시도된 PUT이 삭제된 본문을 되살리는 것을 방지) |
+| `POST /v1/items` | **2단계: 커밋.** 헤더: `X-Item-Id`, `X-Device-Id`, `X-Created-At`. 본문(binary)은 header 암호문. 해당 id의 본문이 있어야 하며(없으면 409), seq 부여 후 broadcast. 응답 `{seq}`. 같은 id 재커밋은 기존 seq 반환 (idempotent). header 암호문은 64 KiB 초과 시 413 |
+| `GET /v1/items?since=<seq>` | seq 초과 항목 목록 (최대 20개, 만료 제외, purged 여부 포함). 원소: `seq, id(hex), device_id(hex), created_at, header(base64), body_size, purged` |
 | `GET /v1/items/{id}/body` | body 암호문 (스트리밍). 404=없음/만료, **410=purged(수신 후 삭제됨)** |
-| `DELETE /v1/items/{id}/body` | **수신 기기가 클립보드 적용 후 호출** (idempotent). 본문(DO 행 또는 R2 객체) 삭제, `purged=1`, `body_purged` 이벤트 broadcast. header는 유지 |
+| `DELETE /v1/items/{id}/body` | **수신 기기가 클립보드 적용 후 호출** (idempotent; 커밋되지 않았거나 없는 id는 404). 본문(DO 행 또는 R2 객체) 삭제, `purged=1`, `body_purged` 이벤트 broadcast. header는 유지 |
 | `GET /v1/config` | `{version, blob(base64)}`; 설정이 없으면 404 (= 텍스트만) |
-| `PUT /v1/config` | 헤더 `If-Match: <version>`(최초는 0). 낙관적 동시성; 성공 시 version+1, `config` 이벤트 broadcast. UI는 Mac만 노출하지만 API는 동일 토큰으로 동작 |
+| `PUT /v1/config` | 헤더 `If-Match: <version>`(최초는 0), 본문(binary)은 암호화된 config blob(`Content-Length` 필수, 1B~64 KiB). 응답 `{version}`. 낙관적 동시성; 성공 시 version+1, `config` 이벤트 broadcast. 버전 불일치는 **412** + 본문 `{version}`. blob은 64 KiB 초과 시 413. UI는 Mac만 노출하지만 API는 동일 토큰으로 동작 |
 
 - 업로드 순서(PUT→POST)는 커밋된 항목만 이벤트로 보이게 하고, 대용량 스트림을 DO 메모리에 올리지 않기 위한 것이다 (D-15, D-20).
 - 클라이언트는 대용량 업로드/다운로드 동안 진행률을 표시하고 긴 타임아웃(예: 5분)을 사용한다.
 
 ### 5.3 WebSocket 메시지 (JSON)
 - 서버→클라이언트
-  - `{"t":"hello","seq":<최신 seq>,"config":{"version":N,"blob":"<b64>"}|null}`
+  - `{"t":"hello","seq":<마지막으로 부여된 seq (D-36; 항목이 없으면 0)>,"config":{"version":N,"blob":"<b64>"}|null}`
   - `{"t":"item","seq","id","device_id","created_at","header":"<b64>","body_size","inline_body":"<b64>|null"}` — body 암호문이 32KB 이하면 inline (2초 목표, NFR-2). 업로드한 기기의 소켓에는 보내지 않는다.
-  - `{"t":"body_purged","id":"<b64>"}` — 다른 기기가 적용을 마쳐 본문이 삭제됨. 클라이언트는 해당 항목을 "서버에서 삭제됨"으로 표시 (로컬 캐시가 있으면 복원 가능).
+  - `{"t":"body_purged","id":"<hex>"}` — 다른 기기가 적용을 마쳐 본문이 삭제됨. 클라이언트는 해당 항목을 "서버에서 삭제됨"으로 표시 (로컬 캐시가 있으면 복원 가능).
   - `{"t":"config","version":N,"blob":"<b64>"}`
+- **인코딩 (D-35):** `id`/`device_id`는 소문자 hex(헤더 `X-Item-Id`/`X-Device-Id` 포함), `header`/`inline_body`/config `blob`은 표준 base64(패딩 있음, `+/`). Bearer 토큰만 base64url.
 - 클라이언트→서버: 없음. Heartbeat는 DO **auto-response**(`"ping"`→`"pong"`)로 처리해 DO를 깨우지 않는다. 클라이언트는 **30초마다** `"ping"`을 보내고, **90초간** `"pong"`이 없으면 재연결한다.
 
 ### 5.4 Durable Object 동작
 - SQLite-backed DO + **WebSocket Hibernation API**. R2 binding 보유.
 - 커밋 시 `seq` 부여 → 20개 초과분의 항목·본문(DO 행/R2 객체) 즉시 삭제 (FR-5) → 다른 소켓에 `item` 이벤트 broadcast.
-- 만료(24h): DO **alarm**으로 만료 항목의 본문 삭제, 읽기 시에도 `expires_at > now` 필터.
-- **고아 정리**: 커밋되지 않은 채 10분 넘은 `bodies` 행(및 R2 객체)을 alarm에서 삭제. R2 lifecycle rule(1일 후 만료)을 최후 안전망으로 설정.
+- 만료(24h): DO **alarm**으로 만료 항목의 **행과 본문을 모두 삭제**(이후 GET은 404), 읽기 시에도 `expires_at > now` 필터. purged 항목도 20개 cap에 포함한다 (D-37).
+- alarm은 하나만 쓰며 `min(다음 만료, 가장 오래된 미커밋 본문 + 10분)`으로 PUT·커밋·alarm 처리 후 재설정한다.
+- **고아 정리**: 커밋되지 않은 채 10분 넘은 `bodies` 행(및 R2 객체)을 alarm에서 삭제. R2 lifecycle rule(1일 후 만료)을 최후 안전망으로 설정한다 (버킷 설정이므로 `wrangler.toml`이 아니라 `wrangler r2 bucket lifecycle`로 등록).
 - 최악 보관량: 20개 × 20 MiB(기본) ≈ 400 MiB, 사용자가 50 MiB로 올려도 ≈ 1 GiB (R2 무료 10GB 이내).
 
 ## 6. 클라이언트 공통 동작
@@ -357,3 +361,7 @@ CREATE TABLE config (
 | D-31 | 복사에 폴더가 하나라도 포함되면 항목 전체 무시 + 알림 | 폴더만 건너뛰고 나머지 전송 / v1에서 디렉터리 엔트리 지원 | v1 번들에 디렉터리 타입이 없고 수신 측이 경로 구분자를 제거함. S-3에서 Explorer HDROP이 폴더를 포함함을 확인. 일부만 전달되어 조용히 누락되는 것을 피함(D-18과 같은 방향) |
 | D-32 | passphrase는 NFKD 뒤 공백 집합의 연속을 U+0020 하나로, 양끝 제거(대소문자 유지) | NFKD만 | 두 번째 기기의 공백 오타가 다른 vault_id → 원인 모를 401이 되는 것을 방지. 서버 데이터가 생기기 전(M1)에 확정 |
 | D-33 | UUID 와이어/AAD 표현은 RFC 4122 순서 16B, 문자열/키는 소문자 hex. 번들은 정렬·엄격 규칙(PROTOCOL.md), JSON(header/config)은 비정규 → 벡터는 고정 평문 바이트와 파싱 필드로 비교 | 언어 기본 표현/인코더 출력 바이트 비교 | C# Guid 혼합 엔디언, JSON 이스케이프·키 순서가 언어마다 달라 상호 복호화 실패를 만들 수 있음 |
+| D-34 | R2 본문 키는 업로드마다 고유(`<vault_id>/<hex(id)>/<nonce>`, `bodies.r2_key`). Worker는 스트리밍 전 DO `begin`, 후 `finish`(재검사·교체·이전 객체 삭제)를 호출 | 고정 키 `<vault_id>/<hex(id)>` | 고정 키에서는 DELETE/커밋 직전에 통과한 재시도 PUT이 객체를 되살리거나 덮어써 DO가 모르는 고아가 생김(D-27 위반). 고유 키면 finish에서 원자적으로 판정 |
+| D-35 | id/device_id는 어디서나 소문자 hex, blob(header, inline_body, config)은 패딩 있는 표준 base64, Bearer만 패딩 없는 base64url(엄격, 32B) | 혼용 | Swift `Data(base64Encoded:)`가 URL-safe를 거부하는 등 상호운용 오류를 막음. `body_purged.id`의 `<b64>` 표기를 hex로 정정 |
+| D-36 | `hello.seq`는 마지막으로 부여된 seq(`sqlite_sequence`), 만료·cap 후에도 줄지 않음. WS의 `last_seq` 파라미터는 폐지 | `MAX(seq)`, `last_seq` 사용 | 행이 지워지면 MAX가 0으로 떨어져 catch-up이 혼동됨. catch-up은 `GET /items?since=`로 충분 |
+| D-37 | purged 항목도 20개 cap에 포함. 만료는 행+본문 삭제(GET 404). 상태 코드: 411 CL 없음, 412 If-Match 불일치, 404 미커밋 DELETE, 409 본문 없는 커밋, 413 header/config blob 64 KiB 초과 | 미정 | 구현이 암묵적으로 정하면 클라이언트와 어긋남 |

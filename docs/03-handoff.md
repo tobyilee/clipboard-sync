@@ -2,7 +2,7 @@
 
 > 작성일: 2026-09-29 (M0 진행 중 갱신, 이전 버전을 대체)
 > 목적: 새 세션/새 작업자가 이 문서와 `docs/00~02`, `docs/spikes.md`만 읽고 **M0의 남은 작업부터 바로 이어갈 수 있게** 현재 상태를 정리한다.
-> 상태 요약: **설계·계획 완료. M0 완료(S-1~S-4 통과, S-5 부분). M1 구현 완료(TS/Swift/C#이 같은 벡터 통과).** 제품 코드는 아직 없음(저장소는 문서 + 빈 디렉터리 골격).
+> 상태 요약: **설계·계획 완료. M0 완료(S-1~S-4 통과, S-5 부분). M1 완료(TS/Swift/C#이 같은 벡터 통과).** 제품 코드는 아직 없음(저장소는 문서 + 빈 디렉터리 골격).
 
 ## 1. 한눈에 보기
 
@@ -12,11 +12,11 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M1 커밋·push 후 Cloud PC에서 `dotnet test` 1회 → M2 서버** |
+| 다음 작업 | **M2 마무리**(CLI 피어 네트워킹, Free 한도 실측) 후 **M3 macOS 앱** |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
-2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-29**)
+2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-37**)
 3. `02-implementation-plan.md` — 어떤 순서로 (M0~M7, 완료 기준, 스파이크, 위험)
 4. `spikes.md` — 스파이크별 결과 (가정 / 결과 / 설계 변경)
 5. 이 문서 — 지금 어디까지 왔고, 무엇이 확정/미확정인지
@@ -71,10 +71,10 @@ dotnet --version   # 10.x
 RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipboard 해제 + (필요 시) Intune 정책 확인. **끈 뒤 Mac에서 복사 → Windows 메모장에 붙여 아무것도 안 붙는지 확인**하는 것이 S-5 자체다.
 
 ## 6. 다음에 할 일 (순서)
-0. **M0 완료, M1 구현 완료(커밋 후 Cloud PC 확인만 남음).** `protocol/PROTOCOL.md`, `protocol/test-vectors.json`(생성물, 직접 수정 금지), `protocol/ref`(TS, `npm run gen` / `npm test`), `mac/ClipSyncCore`(`swift test`), `windows/ClipSync.Core`(+ Tests, `dotnet test windows/ClipSync.sln`)가 같은 벡터를 통과한다. 결정 D-30~D-33 반영.
-   - M1 완료 기준의 "C# 라이브러리 통과"는 Mac에서 확인됨. push 후 **Cloud PC에서 `git pull` → `dotnet test windows\ClipSync.sln` 1회**로 최종 확인.
+0. **M0 완료, M1 완료(Mac과 Cloud PC 모두에서 통과 확인, 2026-09-29).** `protocol/PROTOCOL.md`, `protocol/test-vectors.json`(생성물, 직접 수정 금지), `protocol/ref`(TS, `npm run gen` / `npm test`), `mac/ClipSyncCore`(`swift test`), `windows/ClipSync.Core`(+ Tests, `dotnet test windows/ClipSync.sln`)가 같은 벡터를 통과한다. 결정 D-30~D-33 반영.
+   - Cloud PC `dotnet test windows\ClipSync.sln` 9개 통과. 처음에는 NuGet 소스 문제(`NU1100`)로 복원이 실패했고 재시도로 해결됨(원인 미확인, 부동 버전은 고정함).
    - `swift test`가 `TestingMacros plugin not found`로 실패하면 `rm -rf mac/ClipSyncCore/.build` 후 재실행(다른 툴체인이 만든 캐시 위 증분 빌드에서 간헐 발생, 콜드 빌드는 CLT/Xcode 모두 통과).
-1. **M2 서버** (Worker + DO + R2, `vitest` + `@cloudflare/vitest-pool-workers`): 착수 전 plan §4 확인 + advisor 검토. CLI 테스트 피어의 **네트워킹 부분**(`protocol/ref`)도 여기서 만든다.
+1. **M2 서버: 구현·테스트·개발 배포 완료(미커밋).** `server/`(Worker+DO+R2), `vitest` 22개 통과, 로컬 `wrangler dev`와 배포(`https://clipsync-dev.clipboardsync.workers.dev`, 버킷 `clipsync-dev-bodies` + 1일 lifecycle, secret `VAULT_ID`=테스트 벡터 값)에서 `server/scripts/smoke.mjs --big`(20 MiB 왕복→삭제→410, 409, 413) 통과. D-34~D-37 반영. **남은 것:** CLI 테스트 피어의 네트워킹(`protocol/ref`, Node 내장 WebSocket이 Authorization 헤더를 보낼 수 있는지 먼저 확인), Workers Free 일일 한도 실측, 배포 환경에서 429 확인. 프로덕션 배포는 M7.
 2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
 4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증한다. 폴더 포함 복사는 D-31(항목 전체 무시 + 알림).
