@@ -267,7 +267,15 @@ public sealed class ServerClient : IDisposable
                         reason = $"no pong for {pongTimeout.TotalSeconds:0}s";
                         return;
                     }
-                    await ws.SendAsync(payload, WebSocketMessageType.Text, true, inner.Token).ConfigureAwait(false);
+                    // 연결이 조용히 끊기면 전송이 끝나지 않을 수 있다. 감시가 멈추지 않도록 전송에 시한을 둔다.
+                    using var sendTimeout = CancellationTokenSource.CreateLinkedTokenSource(inner.Token);
+                    sendTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+                    try { await ws.SendAsync(payload, WebSocketMessageType.Text, true, sendTimeout.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!inner.Token.IsCancellationRequested)
+                    {
+                        reason = "ping send timed out";
+                        return;
+                    }
                 }
             }
 

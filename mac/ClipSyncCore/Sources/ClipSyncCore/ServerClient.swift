@@ -225,6 +225,8 @@ public final class ServerClient: Sendable {
         let task = session.webSocketTask(with: req)
         let liveness = Liveness()
         return AsyncStream { continuation in
+            // 감시 루프는 절대 전송 완료를 기다리지 않는다: 연결이 조용히 끊기면 send/receive가 끝나지 않아
+            // 감시까지 멈추고 재연결이 영영 일어나지 않는다 (M4에서 실제로 발생).
             let pinger = Task {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: pingInterval)
@@ -234,7 +236,7 @@ public final class ServerClient: Sendable {
                         continuation.finish()      // onTermination이 소켓을 닫는다
                         break
                     }
-                    try? await task.send(.string(pingPayload))
+                    task.send(.string(pingPayload)) { _ in }   // 완료 핸들러 형태: 기다리지 않는다
                 }
             }
             let reader = Task {

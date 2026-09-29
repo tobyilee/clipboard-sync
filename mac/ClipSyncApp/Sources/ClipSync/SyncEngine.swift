@@ -50,9 +50,11 @@ final class SyncEngine {
         }
         timer?.tolerance = 0.1
         runTask = Task { [weak self] in await self?.runLoop(c) }
+        Log.info("engine start device=\(settings.deviceId) server=\(url.host ?? "") lastSeq=\(settings.lastSeq.map(String.init) ?? "nil")")
     }
 
     func stop() {
+        if client != nil { Log.info("engine stop") }
         timer?.invalidate(); timer = nil
         runTask?.cancel(); runTask = nil
         applyTask?.cancel(); applyTask = nil
@@ -74,8 +76,10 @@ final class SyncEngine {
                 switch ev {
                 case .hello(let seq, _):
                     connection = .connected; lastMessage = nil; backoff = 1; onChange()
+                    Log.info("connected hello.seq=\(seq)")
                     await catchUp(c, helloSeq: seq)
                 case .item(let item, let inline):
+                    Log.info("event item seq=\(item.seq) id=\(item.id) from=\(item.deviceId.prefix(8)) inline=\(inline != nil)")
                     await handle([item], inline: [item.id: inline], client: c)
                 case .bodyPurged(let id):
                     if let i = recent.firstIndex(where: { $0.id == id }) { recent[i].purged = true; onChange() }
@@ -83,10 +87,12 @@ final class SyncEngine {
                     break   // vault 설정은 M5
                 case .closed(let why):
                     lastMessage = why
+                    Log.info("disconnected: \(why ?? "-")")
                 }
             }
             if Task.isCancelled { return }
             connection = .offline; onChange()
+            Log.info("reconnect in ~\(Int(backoff))s")
             try? await Task.sleep(for: .seconds(backoff * Double.random(in: 0.8...1.2)))
             backoff = min(60, backoff * 2)
         }
@@ -105,6 +111,7 @@ final class SyncEngine {
             await handle(items, inline: [:], client: c)
         } catch {
             lastMessage = "목록 조회 실패: \(error)"; onChange()
+            Log.error("catch-up list: \(error)")
         }
     }
 
@@ -123,6 +130,7 @@ final class SyncEngine {
                                canApply: apply && canApply, allowedKinds: allowedKinds)
         settings.lastSeq = plan.newLastSeq
         onChange()
+        Log.info("handled \(items.count) item(s) lastSeq=\(plan.newLastSeq) target=\(plan.target.map { String($0.seq) } ?? "-")")
         if let t = plan.target, let it = items.first(where: { $0.seq == t.seq }) {
             applyTask?.cancel()   // 더 새 항목이 오면 진행 중인 이전 다운로드는 취소 (6.3-2)
             applyTask = Task { [weak self] in await self?.apply(it, inline: inline[it.id] ?? nil, client: c) }
@@ -149,12 +157,14 @@ final class SyncEngine {
             if let hash { ring.add(hash) }   // 되돌아오는 변경을 업로드하지 않도록 (D-24)
             if let hash, hash == PasteboardIO.currentHash() {
                 // D-49: 이미 같은 내용이면 다시 쓰지 않는다 (RDP 리디렉션 on에서 재쓰기→재전파를 줄인다)
+                Log.info("apply skipped (same content) seq=\(it.seq) id=\(it.id)")
             } else {
                 lastChangeCount = PasteboardIO.write(entries: entries, itemId: it.id)
+                Log.info("applied seq=\(it.seq) id=\(it.id)")
             }
             settings.lastAppliedSeq = max(settings.lastAppliedSeq ?? 0, it.seq)
         } catch {
-            if !Task.isCancelled { lastMessage = "적용 실패: \(error)"; onChange() }
+            if !Task.isCancelled { lastMessage = "적용 실패: \(error)"; onChange(); Log.error("apply seq=\(it.seq): \(error)") }
         }
     }
 
@@ -205,6 +215,7 @@ final class SyncEngine {
         for attempt in 1...3 {
             do {
                 let seq = try await c.upload(item)
+                Log.info("sent seq=\(seq) id=\(item.id) bytes=\(item.bodySize)")
                 // 서버는 업로더의 소켓에 이벤트를 보내지 않으므로 내가 보낸 항목을 최근 항목에 직접 추가한다.
                 recent.append(RecentItem(seq: seq, id: item.id, deviceId: settings.deviceId, kinds: kinds, preview: preview,
                                          createdAt: item.createdAt, purged: false))
@@ -212,6 +223,7 @@ final class SyncEngine {
                 if recent.count > 20 { recent.removeLast(recent.count - 20) }
                 lastMessage = nil; onChange(); return
             } catch {
+                Log.error("upload id=\(item.id) attempt=\(attempt): \(error)")
                 if attempt == 3 { lastMessage = "전송 실패: \(error)"; onChange(); return }
                 try? await Task.sleep(for: .seconds(delay)); delay *= 2
             }

@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 슬립에서 깨어나면 즉시 재연결 (6.5)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.engine.restart() }
+            Task { @MainActor in Log.info("system wake → restart"); self?.engine.restart() }
         }
 
         if configuredVault() == nil { showOnboarding() } else { engine.start() }

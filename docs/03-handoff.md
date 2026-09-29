@@ -12,7 +12,7 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M4 Windows 앱 Cloud PC 검증** (코드·Mac 측 테스트 완료) |
+| 다음 작업 | **M5 vault 설정 + 이미지/파일** |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
@@ -82,11 +82,15 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
    - `--selftest-keychain`은 실제 항목(account `passphrase`)과 분리된 account `selftest`를 쓴다. RTF/HTML만 있는 복사에도 plain text fallback을 함께 보낸다(kinds `["text","html"]`).
    - **미구현(이후 마일스톤):** 알림(spec 6.6, 지금은 메뉴에 메시지 표시), 로컬 우선·pending(M6), 이미지/파일·vault 설정(M5), 일시정지/off 해제 직후 catch-up 재실행(M6).
    - **정정:** 인증서 CN의 `P7H3D7D535`는 사용자 ID이고 실제 TeamIdentifier는 `4T2Y2T7SHU`.
-1b. **M4 Windows 앱: 구현 완료, Cloud PC 실행 검증 대기.** S-5 방향별 확인(양방향 off) 후 착수. D-44~D-49 반영.
+1b. **M4 Windows 앱: 완료(텍스트 기준, 사용자 결정 2026-09-29).** S-5 방향별 확인(양방향 off) 후 착수. D-44~D-49 반영.
    - **Mac에 .NET SDK 10.0.401 설치(`~/.dotnet`, 사용자 승인)** → `PATH="$HOME/.dotnet:$PATH" dotnet test windows/ClipSync.sln`로 Core 테스트와 서버 교차 테스트(`CLIPSYNC_URL`/`CLIPSYNC_PASSPHRASE` 설정 시), `dotnet build`로 WinForms 앱 컴파일(`EnableWindowsTargeting`)을 Mac에서 먼저 확인한다. `windows/global.json`이 10.0.401(latestPatch)로 고정.
    - `ClipSync.Core`(net10.0): `ServerClient`(HttpClient + ClientWebSocket, 텍스트 ping/90초 타임아웃, 프레임 조립, `purged` 선택), `SyncLogic`(해시·dedupe 링·catch-up·LF→CRLF·HTML→plain), `CfHtml`(Build/ExtractFragment, 오프셋→주석→body 폴백), `ServerUrlInput`. C# 테스트 40개 통과(Mac, 서버 교차 포함: C#↔CLI 양방향, WS inline→삭제→`body_purged`, pong 타임아웃, 401).
    - `ClipSync.App`(net10.0-windows WinForms, 실행 파일 `ClipSync.exe`): 메시지 전용 윈도우 클립보드 리스너(100ms debounce), raw Win32 읽기/쓰기(마커 `ClipSyncItemId`, `CanUploadToCloudClipboard=0`, 시퀀스 번호로 자기 쓰기 건너뜀), Credential Manager(`ClipSync/passphrase`, `--selftest-credential`은 `ClipSync/selftest`), `%LOCALAPPDATA%\ClipboardSync\{settings.json,logs\}`, 트레이 메뉴(Mac과 동일 + "로그 폴더 열기"), balloon 알림, `HKCU Run` 자동 시작, named mutex 단일 실행, 전원 복귀 시 재연결.
    - D-49(같은 내용이면 적용 생략)는 Mac 앱에도 반영하고 실측 확인(같은 내용 → `changeCount` 불변, 다른 내용 → 마커와 함께 기록).
+   - **Cloud PC 실측(2026-09-29):** `dotnet test` 40개 통과, `--selftest` 11개 항목 ALL PASS(Credential, 쓰기/읽기, 시퀀스 번호, 리스너, 마커, CRLF, CF_HTML 한글·이모지 오프셋, D-49 해시, 서버 조회, WebSocket hello). **Mac→Windows 텍스트**(한글·이모지·두 줄 → 메모장에 CRLF로 붙음), **Windows→Mac 텍스트** 모두 동작, 서로 적용 후 재업로드(에코) 없음(서버 기록 51·52 두 건뿐). Mac→서버 리치 텍스트(RTF→`text`+`html`)도 업로드 확인.
+   - **버그(2026-09-29, 수정):** 첫 Windows→Mac 적용(seq 52) 뒤 Mac 앱이 원격 항목을 더 처리하지 못하고 재연결도 하지 않았다(`lastSeq` 52 고정, 보내기는 정상). 유력한 원인: 연결 감시 루프가 ping 전송(`URLSessionWebSocketTask.send`) 완료를 `await`해, 연결이 조용히 끊기면 감시도 멈춤. 수정: Swift는 완료 핸들러 형태로 보내고 기다리지 않음, C#은 ping 전송에 10초 시한. Mac 앱에 파일 로그 추가(`~/Library/Logs/ClipSync/clipsync.log`, 내용 미기록). 수정 후 원격 항목 7개/3.5분 모두 0.5초 내 적용. **주의:** 이 Mac에서는 `lsof`가 앱 소켓을 보여 주지 않는다 → 연결 확인은 `netstat -anv -p tcp | grep ClipSync`. 원인은 재현으로 확정하지 못했으므로 다시 생기면 로그로 확인한다.
+   - **사용자 결정으로 미룬 검증(M7 수동 E2E 매트릭스에서):** Windows 쪽 HTML 붙여넣기 확인(Edge contenteditable 등), Edge에서 복사한 CF_HTML → Mac 적용, RDP 리디렉션 **on** 에코 루프 테스트(통과 기준: 복사 1회당 서버 항목 ≤2, 이후 90초간 추가 없음; 테스트 후 리디렉션 off 복귀), Windows 자동 시작(`HKCU Run`)은 개발 빌드 경로라 미설정.
+   - Cloud PC에서 Mac으로 출력 전달은 **Mac 스크린샷**(Windows App 창, 바탕화면 저장)을 에이전트가 직접 읽는 방식이 동작했다. 파일명에 U+202F가 있어 스크래치 폴더로 복사 후 읽는다.
 2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
 4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증한다. 폴더 포함 복사는 D-31(항목 전체 무시 + 알림).
