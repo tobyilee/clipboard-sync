@@ -58,10 +58,12 @@ Argon2id는 두 플랫폼 표준 라이브러리에 없어 libsodium 바인딩 �
 ```
 salt        = UTF8("clipsync/v1/salt")                 # 고정 상수 (서버 왕복 없이 파생해야 하므로)
 master      = PBKDF2(passphrase_NFKD_utf8, salt, 600000, 32B)
-enc_key     = HKDF(master, info="clipsync/v1/enc",  32B)
-auth_token  = HKDF(master, info="clipsync/v1/auth", 32B)
-vault_id    = hex(SHA-256(auth_token))
+enc_key     = HKDF-SHA256(ikm=master, salt=empty, info=UTF8("clipsync/v1/enc"),  L=32)
+auth_token  = HKDF-SHA256(ikm=master, salt=empty, info=UTF8("clipsync/v1/auth"), L=32)
+vault_id    = lowercase_hex(SHA-256(auth_token))
 ```
+- passphrase는 **NFKD 정규화 → UTF-8 바이트**로 만든 뒤 PBKDF2에 바이트로 전달한다(문자열 오버로드 사용 금지).
+- HKDF salt는 **빈 값**(RFC 5869: 해시 길이만큼의 0바이트와 동일). PBKDF2가 이미 salt를 적용했으므로 추가 salt는 두지 않는다. `info`는 라벨의 UTF-8 원문(NUL 종료 없음). (D-30)
 - 고정 salt는 **passphrase가 고엔트로피일 때만 안전**하다. 첫 기기의 앱이 **passphrase를 생성**한다: EFF long wordlist 7단어 (약 90bit). 사용자는 두 번째 기기에 그대로 입력한다.
 - 직접 정한 passphrase는 24자 이상 + 경고 문구를 조건으로 허용한다.
 - `info` 라벨에 버전(`v1`)을 포함해 파라미터 변경 시 키가 자동 분리되게 한다.
@@ -351,3 +353,4 @@ CREATE TABLE config (
 | D-27 | 이미 커밋/purged된 id의 `PUT /body`는 409 | 덮어쓰기 허용 | DELETE 후 재시도된 PUT이 삭제된 본문을 되살리는 것을 방지 |
 | D-28 | WebSocket 하트비트: 클라이언트 30초 ping, 90초 pong 없으면 재연결 | 미정 | 유휴 연결 끊김의 조기 감지 |
 | D-29 | pasteboard 신규 API 게이트는 `#available(macOS 15.4, *)`. 종류 판별은 `pasteboard.types`로, 권한 온보딩은 `accessBehavior` 런타임 상태 기반(`.ask`/`.alwaysDeny`일 때만 "권한 필요") | `detect*`로 사전 판별, 항상 권한 안내 온보딩 | S-2: `detect*`는 종류 판별 API가 아님(파일 content type 한정), 이 환경에서 `.alwaysAllow` 기본값이라 경고가 재현되지 않음 |
+| D-30 | HKDF는 빈 salt, `info`는 라벨 UTF-8 원문(NUL 없음), passphrase는 NFKD→UTF-8 바이트로 PBKDF2, `vault_id`는 소문자 hex | HKDF에 고정 salt 추가 | 두 플랫폼 기본 동작이 동일해 상호운용 위험이 가장 낮음. PBKDF2가 이미 salt 적용. S-4 착수 전 모호성 제거 |

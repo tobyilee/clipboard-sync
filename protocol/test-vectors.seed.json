@@ -1,0 +1,71 @@
+{
+  "spec": "clipsync/v1 S-4 seed",
+  "vectors": [
+    {
+      "name": "ascii",
+      "passphrase": "abacus abdomen abide abnormal abrasion abroad absence",
+      "passphrase_nfkd_utf8": "616261637573206162646f6d656e2061626964652061626e6f726d616c206162726173696f6e206162726f616420616273656e6365",
+      "master": "fea8f30ed3eecbae7f72f658bb5aa3a6120bc6f40b26030d64875faf4127c7cf",
+      "enc_key": "622f89686a41a9adaccebc6a0bd92af5d80dc30568c278b31335a08d11e1e513",
+      "auth_token": "b8dc0c524417f52a616501cb1d7557f02f62a2cecf36d9db518627aec464fc4c",
+      "vault_id": "a0c70c1e2e93d0a8196db2b4c08cf8e22e04b409413d72a27c6e3345f1c4dbe0",
+      "item_id": "00112233445566778899aabbccddeeff",
+      "device_id": "ffeeddccbbaa99887766554433221100",
+      "created_at": "1790000000123",
+      "config_version": "7",
+      "parts": {
+        "header": {
+          "aad": "0100112233445566778899aabbccddeeffffeeddccbbaa99887766554433221100000001a0c4506c7b01",
+          "nonce": "000102030405060708090a0b",
+          "plaintext": "{\"kind\":\"text\",\"size\":5}",
+          "sealed": "000102030405060708090a0b626dd9fb8c7d2e5f92b552fb78681bfaefca515cbbc2ef28da78bc4e789c38060d5edb84a66ae6d3"
+        },
+        "body": {
+          "aad": "0100112233445566778899aabbccddeeffffeeddccbbaa99887766554433221100000001a0c4506c7b02",
+          "nonce": "0c0d0e0f1011121314151617",
+          "plaintext": "hello, 클립보드",
+          "sealed": "0c0d0e0f10111213141516171055cd703c268382c1e0e1c2b3ebee1cd5719e6c68dc2766ba44502953bd329f48ace9"
+        },
+        "config": {
+          "aad": "01000000000000000703",
+          "nonce": "18191a1b1c1d1e1f20212223",
+          "plaintext": "{\"image\":false,\"maxMB\":20}",
+          "sealed": "18191a1b1c1d1e1f202122232b2ad9346e4459514c137f581ed18158d2bf03b52f07678cd913f5736f4b57649c7cf3d3195f55e83813"
+        }
+      }
+    },
+    {
+      "name": "nfkd",
+      "passphrase": "Café 한글 ＡＢＣ①",
+      "passphrase_nfkd_utf8": "43616665cc8120e18492e185a1e186abe18480e185b3e186af2041424331",
+      "master": "48b62b489564e96e7751a8c100801384199fca0e36b6d16b24597a3df555b05b",
+      "enc_key": "269e53fd86c86e391c03f74148097bbd62b6edb8514427e88928847feed9a5a6",
+      "auth_token": "a4c499ddd0354add361d993a80b9c42e32653287895bdaf9f821d202125d8660",
+      "vault_id": "3593998a3c317cfc7d6307408d8f27a35c3a7fc42e53b00d5a736d098c9b0fde",
+      "item_id": "00112233445566778899aabbccddeeff",
+      "device_id": "ffeeddccbbaa99887766554433221100",
+      "created_at": "1790000000123",
+      "config_version": "7",
+      "parts": {
+        "header": {
+          "aad": "0100112233445566778899aabbccddeeffffeeddccbbaa99887766554433221100000001a0c4506c7b01",
+          "nonce": "000102030405060708090a0b",
+          "plaintext": "{\"kind\":\"text\",\"size\":5}",
+          "sealed": "000102030405060708090a0b308d5243aa31ee9d7312ed4b726bda988098863995be8f2a8d34fec9a1adf75e6695f681ad01eeef"
+        },
+        "body": {
+          "aad": "0100112233445566778899aabbccddeeffffeeddccbbaa99887766554433221100000001a0c4506c7b02",
+          "nonce": "0c0d0e0f1011121314151617",
+          "plaintext": "hello, 클립보드",
+          "sealed": "0c0d0e0f10111213141516174a13ff2c997bf5bf57b5ab15c84aaadc3710e7fa88b06738e8d6c37f906847f552a8ce"
+        },
+        "config": {
+          "aad": "01000000000000000703",
+          "nonce": "18191a1b1c1d1e1f20212223",
+          "plaintext": "{\"image\":false,\"maxMB\":20}",
+          "sealed": "18191a1b1c1d1e1f20212223eb36a904f26547351f79d39e069f2a7bf59bcbe3787b77d73dddd1877311a54f1a896db94230cea5d46f"
+        }
+      }
+    }
+  ]
+}
