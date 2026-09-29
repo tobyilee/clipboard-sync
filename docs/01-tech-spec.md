@@ -241,7 +241,7 @@ CREATE TABLE config (
 
 - 형태: `LSUIElement` 메뉴바 앱 (`NSStatusItem`), SwiftUI 메뉴 + AppKit. **App Sandbox 비활성** (개인 설치용). 로그인 시 자동 시작은 `SMAppService.mainApp`.
 - **서명 (권한 유지에 필수)**: 개인 설치용이라 공증·배포는 하지 않지만 **안정적인 서명 ID로 서명한다** — 무료 Apple Development 인증서(개인 팀) 또는 자체 서명 코드 서명 인증서. ad-hoc/무서명 빌드는 재빌드할 때마다 코드 정체성(designated requirement)이 달라져 pasteboard 허용, 파일 접근(TCC), Keychain 항목 접근이 초기화되고 프롬프트가 반복될 수 있다. 어느 ID를 쓸지는 M0에서 정하고, S-2에서 재빌드 후 권한 유지를 검증한다 (D-22).
-- **배포 타겟**: 최소 macOS 14 (`SMAppService` 등 사용 API 기준; S-2에서 확정). pasteboard 프라이버시 신규 API(`accessBehavior`, `detect*`)는 실제 SDK에서 도입 버전을 확인해 **`#available` 게이트**로 감싸고, 미지원 OS에서는 기존 방식으로 동작한다. 개발 기기는 macOS 26 (Darwin 25.x).
+- **배포 타겟**: 최소 macOS 14 (`SMAppService` 등 사용 API 기준; S-2에서 확정). pasteboard 프라이버시 신규 API(`accessBehavior`, `detect*`)는 SDK 헤더 기준 **macOS 15.4+** 이므로 **`#available(macOS 15.4, *)` 게이트**로 감싸고, 미지원 OS에서는 기존 방식으로 동작한다 (S-2, D-29). 개발 기기는 macOS 26.6.2, Xcode 27.0.
 - **메뉴 구성 (FR-4)**
   ```
   ● 연결됨 · 동기화 켜짐 ✓
@@ -257,10 +257,11 @@ CREATE TABLE config (
   ```
 - 감시: `NSPasteboard.general.changeCount`를 **약 250ms 타이머(tolerance 포함)** 로 폴링. 변경 시 6.2 실행.
 - 소스 포맷 수집: HTML → (없으면) RTF를 `NSAttributedString`으로 HTML 변환 → plain text 순. 이미지는 PNG → (없으면) TIFF를 PNG로 변환. 규칙은 4.3.
-- **pasteboard 개인정보 보호 (macOS 26 대응)**
-  - macOS 26부터 사용자 조작과 무관한 프로그램적 pasteboard **내용 읽기**는 시스템 경고/권한 프롬프트 대상이며, `NSPasteboard.accessBehavior`(허용/거부/질문), 데이터를 읽지 않고 종류만 확인하는 `detect*` API가 추가된다. `changeCount` 폴링 자체는 프롬프트 대상이 아니다. (출처: [Michael Tsai — Pasteboard Privacy Preview in macOS 15.4](https://mjtsai.com/blog/2025/05/12/pasteboard-privacy-preview-in-macos-15-4/), [9to5Mac](https://9to5mac.com/2025/05/12/macos-16-clipboard-privacy-protection/))
-  - 따라서 (a) **온보딩**에서 첫 읽기를 유도하고 시스템 설정의 "다른 앱에서 붙여넣기"를 **허용**으로 바꾸도록 안내, (b) 읽기 전에 `detect*`/타입 목록으로 읽을 가치가 있는 타입인지 먼저 판별 (타입이 꺼져 있으면 내용을 읽지 않고 무시), (c) 메뉴에 **"권한 필요" 상태**와 시스템 설정 열기 버튼.
-  - 구현 시 실제 API 시그니처와 설정 경로는 Xcode SDK 문서로 재확인한다 (웹 요약 기반 정보).
+- **pasteboard 개인정보 보호 (macOS 15.4+, S-2 실측 반영)**
+  - SDK 헤더(`NSPasteboard.h`) 기준: `NSPasteboard.accessBehavior`(`.default`/`.ask`/`.alwaysAllow`/`.alwaysDeny`)와 `detectPatterns`/`detectValues`/`detectMetadata`는 **macOS 15.4+**. 프로그램적 내용 읽기는 `.ask`일 때 사용자 경고 대상이며, 사용자 조작에서 비롯된 붙여넣기 관련 접근은 항상 허용된다. 앱은 첫 경고가 뜬 뒤에야 시스템 설정 목록에 나타나고 그때 상태가 `.default`→`.ask`가 된다. `changeCount` 폴링은 경고 대상이 아니다.
+  - `detect*`는 **패턴/메타데이터 감지용**(URL·이메일 등, `detectMetadata`는 첫 항목의 파일 content type 한정)이며 "무슨 종류인지" 사전 판별용이 아니다. **종류 판별은 `pasteboard.types`/`pasteboardItems[].types`로 한다**: 텍스트 `public.utf8-plain-text`, 파일 `public.file-url`(항목마다 1개), 이미지 `public.png`(+`public.tiff`). S-2에서 이 API들은 내용 읽기 없이 동작했다.
+  - **실측(macOS 26.6.2, MDM 없음)**: 새 번들 ID의 앱(서명/ad-hoc 모두, Finder 직접 실행 포함)이 첫 실행부터 `accessBehavior == .alwaysAllow`였고 내용 읽기에서 경고가 뜨지 않았으며 "다른 앱에서 붙여넣기" 설정 화면도 보이지 않았다. 따라서 **온보딩은 상태 기반**으로 설계한다: `accessBehavior`를 런타임에 읽어(`#available(macOS 15.4, *)`) `.ask`/`.alwaysDeny`일 때만 메뉴에 **"권한 필요" 상태**와 시스템 설정 열기 버튼을 보이고, 그 외에는 안내 없이 동작한다. 경고 문구·설정 경로는 이 환경에서 재현되지 않아 확정하지 못했다 (다른 OS 버전/기본값에서 `.ask`를 만나면 그때 확인).
+  - 사전 판별: 읽기 전에 `types`로 종류를 보고, 꺼진 타입이면 내용을 읽지 않고 무시한다 (spec 4.5).
 - 원격 항목 적용: 텍스트/HTML/PNG는 `NSPasteboardItem`으로 다중 표현을 한 번에 기록. 파일은 `~/Library/Caches/<bundle>/incoming/<item_id>/<sanitized name>`에 저장 후 file URL로 기록 (이 폴더가 6.3의 로컬 캐시). 24시간/200 MiB 기준으로 앱 시작 시와 매시간 정리.
 - 대용량 업로드는 `URLSession` upload task(파일에서 스트리밍), 진행률은 메뉴 상태에 표시.
 - 자격 증명 저장: Keychain. 로컬 파일 읽기 시 Desktop/Documents 등에서 TCC 프롬프트가 뜰 수 있음 → 온보딩 안내.
@@ -349,3 +350,4 @@ CREATE TABLE config (
 | D-26 | 소스 포맷 변환: RTF→HTML(Mac), TIFF→PNG(Mac), DIB/DIBV5→PNG(Windows) | HTML/PNG만 지원 | TextEdit/Notes/Pages/Word는 RTF만, 일부 앱은 TIFF/DIB만 제공해 그대로면 "리치 텍스트/이미지 지원"이 실패 |
 | D-27 | 이미 커밋/purged된 id의 `PUT /body`는 409 | 덮어쓰기 허용 | DELETE 후 재시도된 PUT이 삭제된 본문을 되살리는 것을 방지 |
 | D-28 | WebSocket 하트비트: 클라이언트 30초 ping, 90초 pong 없으면 재연결 | 미정 | 유휴 연결 끊김의 조기 감지 |
+| D-29 | pasteboard 신규 API 게이트는 `#available(macOS 15.4, *)`. 종류 판별은 `pasteboard.types`로, 권한 온보딩은 `accessBehavior` 런타임 상태 기반(`.ask`/`.alwaysDeny`일 때만 "권한 필요") | `detect*`로 사전 판별, 항상 권한 안내 온보딩 | S-2: `detect*`는 종류 판별 API가 아님(파일 content type 한정), 이 환경에서 `.alwaysAllow` 기본값이라 경고가 재현되지 않음 |
