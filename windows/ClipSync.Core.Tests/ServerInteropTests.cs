@@ -120,6 +120,35 @@ public class ServerInteropTests
         await e.DisposeAsync();
     }
 
+    /// D-50: TS가 쓴 설정을 C#이 열고, C#이 쓴 설정을 TS가 연다 (version AAD 포함).
+    [Fact]
+    public async Task ConfigCrossReadWrite()
+    {
+        if (!Enabled) return;
+        using var c = Client();
+        RunCli("config-set", "images=on", "files=on", "max=50");
+        var blob = (await c.GetConfigAsync())!;
+        Assert.Equal(new VaultConfig { Images = true, Files = true, MaxMediaBytes = 50 << 20 }, VaultConfig.Open(blob, c.Keys.EncKey));
+        var (v, cfg) = await c.WriteConfigAsync(x => x with { Images = false, Files = false, MaxMediaBytes = VaultConfig.DefaultMediaBytes });
+        Assert.Equal(blob.Version + 1, v);
+        Assert.Equal(VaultConfig.FailClosed, cfg);
+        var output = RunCli("config-get");
+        Assert.Contains($"\"version\":{v}", output);
+        Assert.Contains("\"images\":false", output);
+    }
+
+    /// R2 경로(>1.25 MiB)를 타는 이미지 번들을 C#이 보내고 TS가 복호화한다.
+    [Fact]
+    public async Task LargeImageBundleCrossesR2()
+    {
+        if (!Enabled) return;
+        using var c = Client();
+        var png = Imaging.EncodePng(MediaTests.Ramp()).Concat(new byte[2 << 20]).ToArray();
+        var sent = await c.SendAsync([new BundleEntry(3, "", png)], ["image"]);
+        var line = RunCli("list").Split('\n').First(l => l.Contains(sent.Id));
+        Assert.Contains($"\"bytes\":{png.Length}", line);
+    }
+
     /// D-28: 서버는 "ping"이 아닌 텍스트에 응답하지 않으므로 "xping"이면 pong 끊김을 재현한다.
     [Fact]
     public async Task SilentConnectionIsClosedAfterPongTimeout()

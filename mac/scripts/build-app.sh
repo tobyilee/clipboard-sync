@@ -4,7 +4,9 @@
 set -euo pipefail
 
 BUNDLE_ID="com.tobylee.clipsync"
-SIGN_SHA1="6ED556371620F93225B112869C65FCBBF3CDFD6F"   # Apple Development: tobyilee@gmail.com (P7H3D7D535)
+# 자체 서명 "ClipSync Dev" (D-55). Apple Development 인증서(6ED55637…)는 2026-09-30 Apple이 폐기해
+# "Malware Blocked and Moved to Bin"으로 실행이 막혔다. 자체 서명은 원격 폐기 대상이 아니다.
+SIGN_SHA1="0877300230D8AF6664E87DA91F5F78A15269E140"   # ClipSync Dev (self-signed, login keychain)
 CONFIG="${CONFIG:-release}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PKG="$ROOT/ClipSyncApp"

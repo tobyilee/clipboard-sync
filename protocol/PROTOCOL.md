@@ -30,7 +30,7 @@ vault_id    = hex(SHA-256(auth_token))
 ## 3. 식별자 (D-33)
 - `item_id`, `device_id`: UUID v4.
 - **와이어/AAD/마커 표현: RFC 4122 순서의 16바이트** (문자열 `f47ac10b-58cc-4372-a567-0e02b2c3d479`를 왼쪽부터 hex로 읽은 바이트열 `f47ac10b58cc4372a5670e02b2c3d479`).
-- 문자열·URL·R2 키 표현: 소문자 hex 32자(하이픈 없음). R2 키는 `<vault_id>/<hex(item_id)>`.
+- 문자열·URL·R2 키 표현: 소문자 hex 32자(하이픈 없음). R2 키는 서버 내부 규칙(spec D-34)이며 클라이언트와 무관하다.
 - C#: `Guid.ToByteArray()`는 혼합 엔디언이므로 그대로 쓰지 않는다 (`ToByteArray(bigEndian: true)` 또는 직접 생성).
 
 ## 4. 암호화 단위
@@ -39,6 +39,7 @@ vault_id    = hex(SHA-256(auth_token))
 - **AAD**
   - 항목: `schema_version(u8=1) || item_id(16) || origin_device_id(16) || created_at(u64, unix ms) || part(u8: 1=header, 2=body)`
   - 설정: `schema_version(u8=1) || config_version(u64) || part(u8=3)`
+    - `config_version`은 **이 blob이 서버에 저장된 뒤 갖게 될 version**이다. `PUT /v1/config`의 `If-Match: N`이면 `N+1`로 봉인하고, 받는 쪽은 서버가 알려 준 `version`으로 연다 (spec D-50).
 - 공개 `seal`은 nonce를 받지 않는다. **고정 nonce는 테스트 전용 진입점**(`sealWithNonce`)으로만 주입한다.
 - `open` 실패(태그/AAD/키 불일치, 길이 < 28바이트)는 예외/오류이며 평문을 반환하지 않는다.
 

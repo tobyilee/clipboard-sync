@@ -7,6 +7,8 @@ import FoundationNetworking
 public enum ServerError: Error, Equatable {
     case http(status: Int, op: String)
     case badResponse(String)
+    /// PUT /v1/config 의 412: 서버의 현재 version
+    case configConflict(currentVersion: Int)
 }
 
 public struct ServerItem: Codable, Equatable, Sendable {
@@ -113,13 +115,14 @@ public final class ServerClient: Sendable {
         public var bodySize: Int { sealedBody.count }
     }
 
-    public func prepare(entries: [BundleEntry], kinds: [String], previewText: String? = nil) throws -> PreparedItem {
+    public func prepare(entries: [BundleEntry], kinds: [String], previewText: String? = nil, imageSize: (w: Int, h: Int)? = nil) throws -> PreparedItem {
         let id = try randomBytes(16)
         let dev = hexDecode(deviceId)!
         let createdAt = UInt64(Date().timeIntervalSince1970 * 1000)
         let body = try encodeBundle(entries)
         var header: [String: Any] = ["v": 1, "kinds": kinds, "body_plain_size": body.count]
         if let previewText { header["preview"] = previewOf(previewText) }
+        if let imageSize { header["image"] = ["w": imageSize.w, "h": imageSize.h] }
         let headerJSON = try JSONSerialization.data(withJSONObject: header)
         return PreparedItem(
             id: uuidHex(id),
@@ -194,6 +197,36 @@ public final class ServerClient: Sendable {
         if status == 404 { return nil }
         try expect(resp, 200, "GET config")
         return try Self.parseConfig(try JSONSerialization.jsonObject(with: data))
+    }
+
+    /// 봉인된 설정을 저장한다 (If-Match 낙관적 동시성). 반환: 새 version. 412면 `configConflict`.
+    public func putConfig(ifMatch: Int, sealedBlob: [UInt8]) async throws -> Int {
+        let req = request("/v1/config", method: "PUT", headers: ["If-Match": String(ifMatch)])
+        let (data, resp) = try await session.upload(for: req, from: Data(sealedBlob))
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if status == 412 { throw ServerError.configConflict(currentVersion: obj?["version"] as? Int ?? -1) }
+        try expect(resp, 200, "PUT config")
+        guard let v = obj?["version"] as? Int else { throw ServerError.badResponse("config version") }
+        return v
+    }
+
+    /// 설정 변경: 최신을 읽어 `update`를 적용해 저장한다. 412면 다시 읽어 한 번 재시도 (D-50). 반환: (version, 저장한 설정).
+    public func writeConfig(_ update: (inout VaultConfig) -> Void) async throws -> (version: Int, config: VaultConfig) {
+        var lastError: Error = ServerError.badResponse("config")
+        for _ in 0..<2 {
+            let current = try await getConfig()
+            var cfg = (try? current.map { try openConfig($0, key: keys.encKey) }) ?? nil ?? .failClosed
+            update(&cfg)
+            let version = current?.version ?? 0
+            do {
+                let v = try await putConfig(ifMatch: version, sealedBlob: try sealConfig(cfg, key: keys.encKey, version: version + 1))
+                return (v, cfg)
+            } catch ServerError.configConflict(let cur) {
+                lastError = ServerError.configConflict(currentVersion: cur)
+            }
+        }
+        throw lastError
     }
 
     private static func parseConfig(_ obj: Any?) throws -> ConfigBlob {

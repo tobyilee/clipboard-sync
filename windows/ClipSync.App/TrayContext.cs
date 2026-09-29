@@ -105,6 +105,7 @@ sealed class TrayContext : ApplicationContext
             _ => "○ 꺼짐",
         };
         menu.Items.Add(Label($"{dot} · {settings.ServerUri?.Host}"));
+        if (engine.Busy is { } b) menu.Items.Add(Label("⇅ " + b));
         if (engine.LastMessage is { } m) menu.Items.Add(Label("⚠ " + m));
 
         menu.Items.Add(Toggle("동기화", settings.SyncEnabled, () =>
@@ -121,7 +122,11 @@ sealed class TrayContext : ApplicationContext
         menu.Items.Add(Toggle("받기", settings.ReceiveEnabled, () => { settings.ReceiveEnabled = !settings.ReceiveEnabled; settings.Save(); }));
         menu.Items.Add(new ToolStripSeparator());
 
-        menu.Items.Add(Label("동기화 대상: 텍스트 (Mac에서 변경)"));   // vault 설정은 읽기 전용 (spec 8), M5에서 config 반영
+        // vault 설정은 읽기 전용 (spec 8): Mac에서만 바꾼다
+        var cfg = engine.Config;
+        var targets = string.Join(" · ", new[] { "텍스트", cfg.Images ? "이미지" : null, cfg.Files ? "파일" : null }.Where(x => x is not null));
+        menu.Items.Add(Label($"동기화 대상: {targets} (Mac에서 변경)"));
+        menu.Items.Add(Label($"미디어 최대 크기: {cfg.MaxMediaBytes >> 20} MB"));
         var recent = new ToolStripMenuItem("최근 항목");
         if (engine.Recent.Count == 0) recent.DropDownItems.Add(Label("없음"));
         foreach (var r in engine.Recent)
@@ -144,7 +149,7 @@ sealed class TrayContext : ApplicationContext
     {
         var time = DateTimeOffset.FromUnixTimeMilliseconds((long)r.CreatedAt).ToLocalTime().ToString("HH:mm");
         var src = r.DeviceId == settings.DeviceId ? "이 PC" : "기기 " + r.DeviceId[..4];
-        var kind = r.Kinds.Contains("html") ? "HTML" : "텍스트";
+        var kind = r.Kinds.Contains("files") ? "파일" : r.Kinds.Contains("image") ? "이미지" : r.Kinds.Contains("html") ? "HTML" : "텍스트";
         var text = r.Preview.Replace("\r", " ").Replace("\n", " ");
         if (text.Length > 40) text = text[..40] + "…";
         // & 는 메뉴에서 단축키 표시로 해석되므로 이스케이프

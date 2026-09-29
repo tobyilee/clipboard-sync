@@ -64,6 +64,8 @@ sealed class OnboardingForm : Form
             settings.ServerUrl = uri.GetLeftPart(UriPartial.Authority);
             settings.LastSeq = null;   // 첫 연결: hello.seq로 초기화 (과거 항목 자동 적용 방지)
             settings.LastAppliedSeq = null;
+            settings.ConfigVersion = 0;   // 다른 vault일 수 있으므로 config 캐시도 비운다
+            settings.VaultConfig = VaultConfig.FailClosed;
             settings.Save();
             Log.Info($"onboarding saved server={uri.Host} vault={keys.VaultId[..8]}");
             Saved = true;

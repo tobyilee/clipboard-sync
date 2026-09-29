@@ -50,6 +50,12 @@ public sealed class ServerException(int status, string op) : Exception($"{op}: H
     public string Op { get; } = op;
 }
 
+/// PUT /v1/config 의 412: 서버의 현재 version.
+public sealed class ConfigConflictException(long currentVersion) : Exception($"config conflict (server version {currentVersion})")
+{
+    public long CurrentVersion { get; } = currentVersion;
+}
+
 /// 암호화까지 끝낸 업로드 단위. 재시도는 같은 PreparedItem을 다시 업로드한다 (PUT/POST 모두 idempotent).
 public sealed record PreparedItem(string Id, byte[] SealedBody, byte[] SealedHeader, ulong CreatedAt);
 
@@ -103,7 +109,7 @@ public sealed class ServerClient : IDisposable
 
     // ---- 송신 ----
 
-    public PreparedItem Prepare(IEnumerable<BundleEntry> entries, IEnumerable<string> kinds, string? previewText = null)
+    public PreparedItem Prepare(IEnumerable<BundleEntry> entries, IEnumerable<string> kinds, string? previewText = null, (int W, int H)? imageSize = null)
     {
         var id = RandomNumberGenerator.GetBytes(16);
         var dev = Convert.FromHexString(DeviceId);
@@ -111,6 +117,7 @@ public sealed class ServerClient : IDisposable
         var body = Protocol.EncodeBundle(entries);
         var header = new Dictionary<string, object> { ["v"] = 1, ["kinds"] = kinds.ToArray(), ["body_plain_size"] = body.Length };
         if (previewText is not null) header["preview"] = Protocol.PreviewOf(previewText);
+        if (imageSize is { } sz) header["image"] = new Dictionary<string, int> { ["w"] = sz.W, ["h"] = sz.H };
         var headerJson = JsonSerializer.SerializeToUtf8Bytes(header);
         return new PreparedItem(
             Protocol.UuidHex(id),
@@ -188,6 +195,35 @@ public sealed class ServerClient : IDisposable
         Expect(r, 200, "GET config");
         using var doc = JsonDocument.Parse(await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
         return ParseConfig(doc.RootElement) ?? throw new ServerException(200, "GET config (bad body)");
+    }
+
+    /// 봉인된 설정을 저장한다 (If-Match 낙관적 동시성). 반환: 새 version. 412면 ConfigConflictException.
+    public async Task<long> PutConfigAsync(long ifMatch, byte[] sealedBlob, CancellationToken ct = default)
+    {
+        using var r = await http.SendAsync(Request(HttpMethod.Put, "/v1/config", sealedBlob, ("If-Match", ifMatch.ToString())), ct).ConfigureAwait(false);
+        var body = await r.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        long? Version() { try { return JsonDocument.Parse(body).RootElement.GetProperty("version").GetInt64(); } catch { return null; } }
+        if ((int)r.StatusCode == 412) throw new ConfigConflictException(Version() ?? -1);
+        Expect(r, 200, "PUT config");
+        return Version() ?? throw new ServerException(200, "PUT config (bad body)");
+    }
+
+    /// 설정 변경: 최신을 읽어 update를 적용해 저장한다. 412면 다시 읽어 한 번 재시도 (D-50). Windows UI는 쓰지 않지만 테스트·도구용.
+    public async Task<(long Version, VaultConfig Config)> WriteConfigAsync(Func<VaultConfig, VaultConfig> update, CancellationToken ct = default)
+    {
+        ConfigConflictException? last = null;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var cur = await GetConfigAsync(ct).ConfigureAwait(false);
+            VaultConfig baseCfg;
+            try { baseCfg = cur is null ? VaultConfig.FailClosed : VaultConfig.Open(cur, Keys.EncKey); }
+            catch (ProtocolException) { baseCfg = VaultConfig.FailClosed; }
+            var next = update(baseCfg);
+            var version = cur?.Version ?? 0;
+            try { return (await PutConfigAsync(version, next.Seal(Keys.EncKey, version + 1), ct).ConfigureAwait(false), next); }
+            catch (ConfigConflictException e) { last = e; }
+        }
+        throw last!;
     }
 
     static ConfigBlob? ParseConfig(JsonElement e)

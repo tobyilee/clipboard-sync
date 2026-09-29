@@ -41,8 +41,8 @@ final class OnboardingModel {
             let client = try ServerClient(baseURL: url, keys: keys, deviceId: Settings.shared.deviceId)
             _ = try await client.list(since: 0)
             try KeychainStore.save(passphrase: passphrase)
-            Settings.shared.serverURL = url
-            Settings.shared.lastSeq = nil   // 첫 연결: hello.seq로 초기화 (과거 항목 자동 적용 방지)
+            Settings.shared.resetVaultState()   // 다른 vault일 수 있으므로 seq·config 캐시를 비운다
+            Settings.shared.serverURL = url   // lastSeq=nil → 첫 연결에서 hello.seq로 초기화 (과거 항목 자동 적용 방지)
             status = "연결 성공. 저장했습니다."
             done = true
             onFinished()

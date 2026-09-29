@@ -8,23 +8,29 @@ enum PasteboardIO {
     static let markerType = NSPasteboard.PasteboardType("com.tobylee.clipsync.item")
     static let htmlType = NSPasteboard.PasteboardType.html
 
-    struct Content {
+    struct Content: Sendable {
         var plain: String?
         var html: String?
     }
 
-    enum ReadResult {
-        case ownMarker          // 우리가 쓴 변경
-        case ignored(String)    // 보낼 것이 아님 (사유는 디버그용)
-        case content(Content)
+    /// 내용을 읽지 않고 표현 존재 여부만 본다 (spec 4.5 판별 입력).
+    struct Shape {
+        var own: Bool
+        var hasFiles: Bool
+        var hasImage: Bool
+        var hasText: Bool
     }
 
-    static func read(_ pb: NSPasteboard = .general) -> ReadResult {
-        let types = pb.types ?? []
-        if types.contains(markerType) { return .ownMarker }
-        // 4.5-1: 파일이 있으면 항목 전체 무시 (파일명 문자열로 폴백하지 않는다). 파일 동기화는 M5.
-        if types.contains(.fileURL) { return .ignored("files") }
+    static func shape(_ pb: NSPasteboard = .general) -> Shape {
+        let t = Set(pb.types ?? [])
+        return Shape(own: t.contains(markerType), hasFiles: t.contains(.fileURL),
+                     hasImage: t.contains(.png) || t.contains(.tiff),
+                     hasText: t.contains(.string) || t.contains(htmlType) || t.contains(.rtf))
+    }
 
+    /// 텍스트/HTML 표현 (HTML → 없으면 RTF 변환, plain text fallback 포함).
+    static func readText(_ pb: NSPasteboard = .general) -> Content? {
+        let types = pb.types ?? []
         var plain = types.contains(.string) ? pb.string(forType: .string) : nil
         var html: String?
         if types.contains(htmlType), let d = pb.data(forType: htmlType) {
@@ -35,32 +41,38 @@ enum PasteboardIO {
         }
         // plain text fallback은 가능하면 항상 포함한다 (4.3). 또 D-41 해시가 RDP를 통과하는 plain text 기준이 되도록 한다.
         if plain == nil, let h = html { plain = plainText(fromHTML: h) }
-        if plain == nil && html == nil {
-            let hasImage = types.contains(.png) || types.contains(.tiff)
-            return .ignored(hasImage ? "image (off)" : "no text")
-        }
-        return .content(Content(plain: plain, html: html))
+        return plain == nil && html == nil ? nil : Content(plain: plain, html: html)
     }
 
-    /// 원격 항목을 클립보드에 적용한다. 반환: 쓴 뒤의 changeCount (감시자가 자기 쓰기를 건너뛰는 데 쓴다).
+    /// 이미지 원본 바이트: PNG 우선, 없으면 TIFF (변환은 호출자가 메인 스레드 밖에서).
+    static func readImage(_ pb: NSPasteboard = .general) -> (data: Data, isPNG: Bool)? {
+        if let d = pb.data(forType: .png) { return (d, true) }
+        if let d = pb.data(forType: .tiff) { return (d, false) }
+        return nil
+    }
+
+    /// 원격 항목을 클립보드에 적용한다. `tiff`는 PNG를 못 읽는 앱을 위한 추가 표현(호출자가 미리 변환).
+    /// 반환: 쓴 뒤의 changeCount (감시자가 자기 쓰기를 건너뛰는 데 쓴다).
     @discardableResult
-    static func write(entries: [BundleEntry], itemId: String, to pb: NSPasteboard = .general) -> Int {
+    static func write(entries: [BundleEntry], tiff: Data? = nil, itemId: String, to pb: NSPasteboard = .general) -> Int {
         let item = NSPasteboardItem()
         for e in entries {
             switch e.type {
             case 1: item.setString(String(decoding: e.data, as: UTF8.self), forType: .string)
             case 2: item.setData(Data(htmlForApply(String(decoding: e.data, as: UTF8.self)).utf8), forType: htmlType)
-            default: break   // 이미지/파일은 M5
+            case 3: item.setData(Data(e.data), forType: .png)
+            default: break   // 파일은 M5b
             }
         }
+        if let tiff { item.setData(tiff, forType: .tiff) }
         item.setData(Data(hexDecode(itemId) ?? []), forType: markerType)
         pb.clearContents()
         pb.writeObjects([item])
         return pb.changeCount
     }
 
-    /// D-49용: 현재 pasteboard 내용의 해시 (마커 유무와 관계없이). plain text 우선.
-    static func currentHash(_ pb: NSPasteboard = .general) -> String? {
+    /// D-49용: 현재 pasteboard 텍스트의 해시 (마커 유무와 관계없이). plain text 우선.
+    static func currentTextHash(_ pb: NSPasteboard = .general) -> String? {
         let types = pb.types ?? []
         var plain = types.contains(.string) ? pb.string(forType: .string) : nil
         var html: String?

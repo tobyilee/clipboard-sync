@@ -1,9 +1,23 @@
 // CLI 테스트 피어의 네트워킹: 서버 API(spec 5장)를 호출하는 최소 클라이언트. 의존성 없음(Node 24 내장 fetch/WebSocket).
 import { randomBytes } from 'node:crypto';
 import {
-  decodeBundle, deriveKeys, encodeBundle, itemAad, open, previewOf, seal, uuidHex,
+  configAad, decodeBundle, deriveKeys, encodeBundle, itemAad, open, previewOf, seal, uuidHex,
   type BundleEntry, type Keys,
 } from './protocol.ts';
+
+/** vault 설정 (spec 4.4). 없거나 못 받으면 텍스트만 (fail-closed). */
+export interface VaultConfig { v: 1; images: boolean; files: boolean; max_media_bytes: number }
+export const MIB = 1024 * 1024;
+export const DEFAULT_CONFIG: VaultConfig = { v: 1, images: false, files: false, max_media_bytes: 20 * MIB };
+export const MEDIA_SIZES = [5 * MIB, 10 * MIB, 20 * MIB, 50 * MIB];
+
+/** PNG IHDR에서 가로·세로를 읽는다 (디코드하지 않음). PNG가 아니면 null. */
+export function pngSize(b: Uint8Array): { w: number; h: number } | null {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (b.length < 24 || !sig.every((x, i) => b[i] === x) || Buffer.from(b.subarray(12, 16)).toString('latin1') !== 'IHDR') return null;
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  return { w: v.getUint32(16), h: v.getUint32(20) };
+}
 
 export interface ServerItem {
   seq: number; id: string; device_id: string; created_at: number;
@@ -31,11 +45,11 @@ export class Peer {
   }
 
   /** 2단계 업로드(PUT body → POST commit). 반환: seq. */
-  async send(entries: BundleEntry[], kinds: string[], previewText?: string): Promise<{ id: string; seq: number }> {
+  async send(entries: BundleEntry[], kinds: string[], previewText?: string, extraHeader: object = {}): Promise<{ id: string; seq: number }> {
     const id = randomBytes(16);
     const createdAt = BigInt(Date.now());
     const body = encodeBundle(entries);
-    const header = { v: 1, kinds, ...(previewText !== undefined ? { preview: previewOf(previewText) } : {}), body_plain_size: body.length };
+    const header = { v: 1, kinds, ...(previewText !== undefined ? { preview: previewOf(previewText) } : {}), ...extraHeader, body_plain_size: body.length };
     const sealedBody = seal(this.keys.encKey, itemAad(id, hexToBuf(this.deviceId), createdAt, 2), body);
     const sealedHeader = seal(this.keys.encKey, itemAad(id, hexToBuf(this.deviceId), createdAt, 1), Buffer.from(JSON.stringify(header)));
     const idHex = uuidHex(id);
@@ -83,6 +97,34 @@ export class Peer {
   async deleteBody(id: string): Promise<void> {
     const r = await this.req(`/v1/items/${id}/body`, { method: 'DELETE' });
     if (r.status !== 204) throw new Error(`DELETE body: ${r.status}`);
+  }
+
+  sendImage(png: Uint8Array) {
+    const size = pngSize(png);
+    if (!size) throw new Error('not a PNG');
+    return this.send([{ type: 3, name: '', data: png }], ['image'], undefined, { image: size });
+  }
+
+  /** 복호화한 설정. 서버에 없으면 null (= 텍스트만). */
+  async readConfig(): Promise<{ version: number; config: VaultConfig } | null> {
+    const c = await this.getConfig();
+    if (!c) return null;
+    const plain = open(this.keys.encKey, configAad(BigInt(c.version)), Buffer.from(c.blob, 'base64'));
+    return { version: c.version, config: JSON.parse(plain.toString('utf8')) as VaultConfig };
+  }
+
+  /** 설정 변경: 최신을 읽어 update를 적용하고 If-Match로 저장. 412면 한 번 다시 읽어 재적용 (D-50). 반환: 새 version. */
+  async writeConfig(update: (c: VaultConfig) => VaultConfig): Promise<number> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const cur = await this.readConfig();
+      const version = cur?.version ?? 0;
+      const next = update({ ...(cur?.config ?? DEFAULT_CONFIG) });
+      const sealed = seal(this.keys.encKey, configAad(BigInt(version + 1)), Buffer.from(JSON.stringify(next), 'utf8'));
+      const r = await this.req('/v1/config', { method: 'PUT', headers: { 'if-match': String(version) }, body: sealed });
+      if (r.status === 200) return ((await r.json()) as { version: number }).version;
+      if (r.status !== 412) throw new Error(`PUT config: ${r.status}`);
+    }
+    throw new Error('PUT config: conflict after retry');
   }
 
   async getConfig(): Promise<{ version: number; blob: string } | null> {

@@ -1,3 +1,4 @@
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
 using ClipSync.Core;
@@ -29,6 +30,7 @@ sealed class ClipboardListener : NativeWindow, IDisposable
 }
 
 /// Win32 클립보드 읽기/쓰기 (spec 4.5, 6.4, 8). WinForms Clipboard 대신 raw API로 포맷을 정확히 다룬다 (S-3에서 검증).
+/// 원칙: 바이트만 복사하고 곧바로 CloseClipboard. 변환·파일 읽기는 닫은 뒤에 한다 (열어 둔 동안 다른 앱이 모두 막힌다).
 static class ClipboardIO
 {
     /// 에코 방지 1차 마커 (D-44): 원격 항목을 쓸 때 item_id 16바이트를 함께 기록한다.
@@ -39,15 +41,19 @@ static class ClipboardIO
 
     public sealed record Content(string? Plain, string? Html);
 
-    public abstract record ReadResult
-    {
-        public sealed record OwnMarker : ReadResult;
-        public sealed record Ignored(string Why) : ReadResult;
-        public sealed record Text(Content Value) : ReadResult;
-        public sealed record Busy : ReadResult;
-    }
+    /// 내용을 읽지 않고 표현 존재 여부만 본다 (spec 4.5 판별 입력).
+    public sealed record Shape(bool Own, bool HasFiles, bool HasImage, bool HasText);
+
+    /// 원본 이미지 바이트: PNG 우선, 없으면 CF_DIBV5, 그다음 CF_DIB (합성 CF_DIB는 알파가 255라 DIBV5를 먼저, S-3).
+    public sealed record RawImage(byte[] Data, bool IsPng);
 
     public static uint SequenceNumber => Native.GetClipboardSequenceNumber();
+
+    public static Shape GetShape() => new(
+        Native.IsClipboardFormatAvailable(FmtMarker),
+        Native.IsClipboardFormatAvailable(Native.CF_HDROP),
+        Native.IsClipboardFormatAvailable(FmtPng) || Native.IsClipboardFormatAvailable(Native.CF_DIBV5) || Native.IsClipboardFormatAvailable(Native.CF_DIB),
+        Native.IsClipboardFormatAvailable(Native.CF_UNICODETEXT) || Native.IsClipboardFormatAvailable(FmtHtml));
 
     /// spec 8: OpenClipboard 실패 시 5회, 20ms→320ms 백오프.
     static bool OpenWithRetry(IntPtr hwnd)
@@ -87,34 +93,37 @@ static class ClipboardIO
         return nul >= 0 ? s[..nul] : s;
     }
 
-    /// 종류는 포맷 존재 여부로 먼저 판별하고, 꺼진 타입은 내용을 읽지 않는다 (spec 4.5).
-    public static ReadResult Read(IntPtr hwnd)
+    /// 텍스트/HTML fragment. 열지 못하면 null과 busy=true.
+    public static Content? ReadText(IntPtr hwnd, out bool busy)
     {
-        if (Native.IsClipboardFormatAvailable(FmtMarker)) return new ReadResult.OwnMarker();
-        // 4.5-1: 파일이 있으면 항목 전체 무시 (파일명 문자열로 폴백하지 않는다). 파일 동기화는 M5.
-        if (Native.IsClipboardFormatAvailable(Native.CF_HDROP)) return new ReadResult.Ignored("files");
-        var hasText = Native.IsClipboardFormatAvailable(Native.CF_UNICODETEXT);
-        var hasHtml = Native.IsClipboardFormatAvailable(FmtHtml);
-        if (!hasText && !hasHtml)
-        {
-            var image = Native.IsClipboardFormatAvailable(FmtPng) || Native.IsClipboardFormatAvailable(Native.CF_DIBV5) || Native.IsClipboardFormatAvailable(Native.CF_DIB);
-            return new ReadResult.Ignored(image ? "image (off)" : "no text");
-        }
-        if (!OpenWithRetry(hwnd)) return new ReadResult.Busy();
+        busy = false;
+        if (!OpenWithRetry(hwnd)) { busy = true; return null; }
         try
         {
-            var plain = hasText ? ReadUnicodeText() : null;
-            string? html = null;
-            if (hasHtml && GetBytes(FmtHtml) is { } h) html = CfHtml.ExtractFragment(h);
+            var plain = Native.IsClipboardFormatAvailable(Native.CF_UNICODETEXT) ? ReadUnicodeText() : null;
+            var html = Native.IsClipboardFormatAvailable(FmtHtml) && GetBytes(FmtHtml) is { } h ? CfHtml.ExtractFragment(h) : null;
             // D-48/D-41: plain text가 없으면 HTML에서 만든다 (RDP를 통과하는 것은 plain text이므로 해시 기준을 맞춘다).
             plain ??= html is null ? null : SyncLogic.PlainFromHtml(html);
-            if (plain is null && html is null) return new ReadResult.Ignored("empty");
-            return new ReadResult.Text(new Content(plain, html));
+            return plain is null && html is null ? null : new Content(plain, html);
         }
         finally { Native.CloseClipboard(); }
     }
 
-    /// 마커 유무와 관계없이 현재 텍스트/HTML fragment를 읽는다 (D-49 비교와 자체 테스트용). 열지 못하면 null.
+    public static RawImage? ReadImage(IntPtr hwnd, out bool busy)
+    {
+        busy = false;
+        if (!OpenWithRetry(hwnd)) { busy = true; return null; }
+        try
+        {
+            if (Native.IsClipboardFormatAvailable(FmtPng) && GetBytes(FmtPng) is { } png) return new RawImage(png, true);
+            if (Native.IsClipboardFormatAvailable(Native.CF_DIBV5) && GetBytes(Native.CF_DIBV5) is { } v5) return new RawImage(v5, false);
+            if (Native.IsClipboardFormatAvailable(Native.CF_DIB) && GetBytes(Native.CF_DIB) is { } dib) return new RawImage(dib, false);
+            return null;
+        }
+        finally { Native.CloseClipboard(); }
+    }
+
+    /// 마커 유무와 관계없이 현재 텍스트/HTML fragment (D-49 비교와 자체 테스트용).
     public static Content? ReadRaw(IntPtr hwnd)
     {
         if (!OpenWithRetry(hwnd)) return null;
@@ -127,8 +136,16 @@ static class ClipboardIO
         finally { Native.CloseClipboard(); }
     }
 
-    /// D-49용: 현재 클립보드 내용의 해시 (plain text 우선, 없으면 HTML에서 만든 plain).
-    public static string? CurrentHash(IntPtr hwnd) =>
+    /// 자체 테스트용: 특정 포맷의 바이트.
+    public static byte[]? ReadFormat(IntPtr hwnd, uint fmt)
+    {
+        if (!OpenWithRetry(hwnd)) return null;
+        try { return Native.IsClipboardFormatAvailable(fmt) ? GetBytes(fmt) : null; }
+        finally { Native.CloseClipboard(); }
+    }
+
+    /// D-49용: 현재 클립보드 텍스트의 해시 (plain text 우선, 없으면 HTML에서 만든 plain).
+    public static string? CurrentTextHash(IntPtr hwnd) =>
         ReadRaw(hwnd) is { } c ? SyncLogic.ContentHash(c.Plain ?? (c.Html is null ? null : SyncLogic.PlainFromHtml(c.Html)), c.Html) : null;
 
     static IntPtr Alloc(byte[] data)
@@ -141,9 +158,9 @@ static class ClipboardIO
         return h;
     }
 
-    /// 원격 항목을 클립보드에 적용한다. 마커와 CanUploadToCloudClipboard=0을 항상 함께 쓴다 (D-44, spec 8).
-    /// 반환: 쓴 뒤의 시퀀스 번호 (감시자가 자기 쓰기를 건너뛰는 데 쓴다).
-    public static uint Write(IntPtr hwnd, IEnumerable<BundleEntry> entries, string itemIdHex)
+    /// 원격 항목을 클립보드에 적용한다. 이미지는 PNG와 CF_DIBV5를 **둘 다** 쓴다(spec 8; dibV5는 호출자가 미리 만든다).
+    /// 마커와 CanUploadToCloudClipboard=0을 항상 함께 쓴다 (D-44). 반환: 쓴 뒤의 시퀀스 번호.
+    public static uint Write(IntPtr hwnd, IEnumerable<BundleEntry> entries, string itemIdHex, byte[]? dibV5 = null)
     {
         var items = new List<(uint, byte[])>();
         foreach (var e in entries)
@@ -156,9 +173,13 @@ static class ClipboardIO
                 case 2:
                     items.Add((FmtHtml, CfHtml.Build(Encoding.UTF8.GetString(e.Data))));
                     break;
-                // 이미지/파일은 M5
+                case 3:
+                    items.Add((FmtPng, e.Data));
+                    break;
+                // 파일은 M5b
             }
         }
+        if (dibV5 is not null) items.Add((Native.CF_DIBV5, dibV5));
         if (items.Count == 0) throw new InvalidOperationException("no supported entries");
         items.Add((FmtMarker, Convert.FromHexString(itemIdHex)));
         items.Add((FmtNoCloud, BitConverter.GetBytes(0)));
@@ -180,5 +201,32 @@ static class ClipboardIO
         }
         finally { Native.CloseClipboard(); }
         return Native.GetClipboardSequenceNumber();
+    }
+}
+
+/// PNG 디코드는 GDI+로 한다 (Windows 전용; 인코드·DIB 파싱은 Core). 32bppArgb = straight alpha BGRA.
+static class ImageCodec
+{
+    public static Bgra DecodePng(byte[] png)
+    {
+        using var ms = new MemoryStream(png);
+        using var bmp = new Bitmap(ms);
+        var (w, h) = (bmp.Width, bmp.Height);
+        var d = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var px = new byte[w * h * 4];
+            for (var y = 0; y < h; y++) Marshal.Copy(d.Scan0 + y * d.Stride, px, y * w * 4, w * 4);
+            return new Bgra(w, h, px);
+        }
+        finally { bmp.UnlockBits(d); }
+    }
+
+    /// 원본(PNG 또는 DIB) → (PNG 바이트, 픽셀). DIB는 Core 파서 + Core PNG 인코더 (알파 보존, spec 4.3).
+    public static (byte[] Png, Bgra Pixels)? Normalize(ClipboardIO.RawImage raw)
+    {
+        if (raw.IsPng) return (raw.Data, DecodePng(raw.Data));
+        var bgra = Imaging.DibToBgra(raw.Data);
+        return bgra is null ? null : (Imaging.EncodePng(bgra), bgra);
     }
 }

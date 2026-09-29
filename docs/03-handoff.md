@@ -12,11 +12,11 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M5 vault 설정 + 이미지/파일** |
+| 다음 작업 | **M5a(설정+이미지) Windows 검증** → M5b(파일) |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
-2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-49**)
+2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-55**)
 3. `02-implementation-plan.md` — 어떤 순서로 (M0~M7, 완료 기준, 스파이크, 위험)
 4. `spikes.md` — 스파이크별 결과 (가정 / 결과 / 설계 변경)
 5. 이 문서 — 지금 어디까지 왔고, 무엇이 확정/미확정인지
@@ -31,7 +31,7 @@
 - **에코 방지:** private 마커 + **정규화 해시 dedupe(필수)**. RDP 클립보드 리디렉션이 마커를 못 전달하므로 해시가 실질 방어선.
 - **플랫폼:** macOS(Swift, 비샌드박스, 최소 배포 타겟 macOS 14), Windows(**.NET 10 LTS**, WinForms NotifyIcon).
 - **Cloudflare:** **Workers Free** 사용(사용자 결정).
-- **Mac 서명:** **`Apple Development: tobyilee@gmail.com (P7H3D7D535)`** 로 고정(ad-hoc 금지). 공증·앱스토어는 안 함.
+- **Mac 서명:** **자체 서명 `ClipSync Dev`**(D-55, 2026-09-30부터; Apple Development 인증서는 폐기됨). ad-hoc 금지. 공증·앱스토어는 안 함. 재빌드마다 Keychain 확인 창이 한 번 뜬다.
 - **테스트 환경:** Mac(로컬) + **Windows 365 Enterprise Cloud PC(Mac의 Windows App으로 RDP 접속)**. RDP 클립보드 리디렉션은 기본 **off**로 테스트.
 - **(신규) D-29:** pasteboard 신규 API 게이트는 `#available(macOS 15.4, *)`, 종류 판별은 `pasteboard.types`, 권한 온보딩은 `accessBehavior` 런타임 상태 기반.
 
@@ -91,6 +91,12 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
    - **버그(2026-09-29, 수정):** 첫 Windows→Mac 적용(seq 52) 뒤 Mac 앱이 원격 항목을 더 처리하지 못하고 재연결도 하지 않았다(`lastSeq` 52 고정, 보내기는 정상). 유력한 원인: 연결 감시 루프가 ping 전송(`URLSessionWebSocketTask.send`) 완료를 `await`해, 연결이 조용히 끊기면 감시도 멈춤. 수정: Swift는 완료 핸들러 형태로 보내고 기다리지 않음, C#은 ping 전송에 10초 시한. Mac 앱에 파일 로그 추가(`~/Library/Logs/ClipSync/clipsync.log`, 내용 미기록). 수정 후 원격 항목 7개/3.5분 모두 0.5초 내 적용. **주의:** 이 Mac에서는 `lsof`가 앱 소켓을 보여 주지 않는다 → 연결 확인은 `netstat -anv -p tcp | grep ClipSync`. 원인은 재현으로 확정하지 못했으므로 다시 생기면 로그로 확인한다.
    - **사용자 결정으로 미룬 검증(M7 수동 E2E 매트릭스에서):** Windows 쪽 HTML 붙여넣기 확인(Edge contenteditable 등), Edge에서 복사한 CF_HTML → Mac 적용, RDP 리디렉션 **on** 에코 루프 테스트(통과 기준: 복사 1회당 서버 항목 ≤2, 이후 90초간 추가 없음; 테스트 후 리디렉션 off 복귀), Windows 자동 시작(`HKCU Run`)은 개발 빌드 경로라 미설정.
    - Cloud PC에서 Mac으로 출력 전달은 **Mac 스크린샷**(Windows App 창, 바탕화면 저장)을 에이전트가 직접 읽는 방식이 동작했다. 파일명에 U+202F가 있어 스크래치 폴더로 복사 후 읽는다.
+1c. **M5a vault 설정 + 이미지: Mac 쪽 완료, Windows Cloud PC 검증 대기(미커밋 포함).** D-50~D-55.
+   - Core(Swift/C#): `VaultConfig`(키 `images`/`files`/`max_media_bytes`, 허용값 밖이면 20 MiB), `sealConfig/openConfig`(저장될 version AAD), `classify`(4.5), `allowedKinds`(D-51), `pngSize`(IHDR), 이미지 픽셀 해시(D-54). C#은 `Imaging`(DIB→BGRA, BGRA→DIBV5, PNG 인코더, CRC32 직접 구현; System.Drawing 없음 → Mac에서 테스트). `ServerClient.putConfig/writeConfig`(412면 재조회 후 1회 재시도). TS CLI: `config-get`, `config-set images=on files=off max=20`, `send-image PNG`, `list`에 미디어 sha256.
+   - 테스트: Swift 45개, C# 53개(설정 교차 TS↔Swift/C#, R2 경로 이미지 교차 포함). C# PNG를 macOS `sips`가 정상 판독.
+   - Mac 앱: 설정 수신(hello/config 이벤트, 최고 version만 수용·저장), 메뉴 "동기화 대상"(이미지·파일)·"미디어 최대 크기" → PUT, 이미지 송신(PNG 우선, TIFF→PNG, 변환·해시·봉인은 메인 스레드 밖), 이미지 적용(PNG+TIFF+마커), 크기 초과 알림(`UNUserNotificationCenter`), "보내는 중…/받는 중…" 상태. **실측:** 이미지 off면 송수신 모두 무시, on 전환 즉시 반영, CLI→Mac PNG 적용, Mac PNG/TIFF 송신(96×64 알파, 6.2 MB R2 경로, 바이트 해시 일치), max=5 전환 즉시 초과 이미지 차단.
+   - Windows 앱: 설정 수신·메뉴 읽기 전용 표시, 이미지 송신(PNG > DIBV5 > DIB, 클립보드 닫은 뒤 변환), 적용(PNG + DIBV5, GDI+ 디코드), 적용을 별도 작업으로(대용량 다운로드가 이벤트 처리를 막지 않음), `--selftest`에 이미지 왕복 4항목 추가. Mac에서 컴파일만 확인.
+   - **서명 사고(2026-09-30):** Apple Development 인증서가 폐기되어 Mac 앱이 "Malware Blocked and Moved to Bin"으로 휴지통 이동 → 자체 서명으로 전환(D-55). 진단: `/usr/bin/log show`(zsh에서 `log`는 다른 명령에 가려짐)에서 amfid `Trust evaluate failure: [leaf Revocation4]`.
 2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
 4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증한다. 폴더 포함 복사는 D-31(항목 전체 무시 + 알림).

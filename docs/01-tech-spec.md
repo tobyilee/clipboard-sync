@@ -146,6 +146,8 @@ CREATE TABLE config (
 - `max_media_bytes` 허용값: 5 / 10 / 20(기본) / 50 MiB. 텍스트 전용 항목의 한도는 상수 1 MiB.
 - 서버는 이 값을 읽을 수 없다. 따라서 **설정 강제는 송신 측 클라이언트**가 한다. 서버는 별도의 **상수 하드 캡**만 적용한다 (5.1).
 - 클라이언트는 본 것 중 **가장 높은 config_version**만 수용한다 (오래된 blob 재전송을 무시; 서버의 롤백 공격은 완전히 막지 못하며 개인용 위협모델에서 수용).
+- **봉인·수용 규칙 (D-50)**: 설정 blob은 `configAad(저장될 version)`으로 봉인한다(`If-Match: N` → `N+1`). 받는 쪽은 서버가 알려 준 version으로 열고, 복호화에 실패하거나 version이 지금까지 본 최고값 이하이면 무시하고 캐시를 유지한다. 수용한 version과 설정은 로컬에 저장한다. 설정은 시작 시 `GET`, 재연결마다 `hello.config`, 실시간 `config` 이벤트로 받는다. Mac이 변경할 때 412를 받으면 최신을 다시 받아 **사용자가 바꾼 필드만** 다시 적용해 한 번 재시도한다. 자기가 방금 PUT한 version은 항상 수용한다.
+- **어휘 (D-51)**: config 키 `images`/`files` ↔ header `kinds`의 `image`/`files`. 허용 종류 = `{text, html}` ∪ (`images` → `image`) ∪ (`files` → `files`). 두 플랫폼 모두 이 매핑 함수 하나로 수신 허용 종류와 송신 판별을 정한다.
 
 ### 4.5 타입 판별 / 크기 규칙 (FR-2, FR-3)
 송신 측이 클립보드의 표현들을 다음 순서로 판별한다.
@@ -153,7 +155,11 @@ CREATE TABLE config (
 2. 그 외 이미지 표현이 있으면: `images=false`이면 이미지 표현을 버리고 text/html 표현이 남으면 그것만 전송, 남는 게 없으면 무시. `images=true`이면 이미지(+남은 텍스트 표현)를 전송.
 3. 텍스트/HTML만 있으면 텍스트 항목.
 
-크기: body에 image/file 엔트리가 있으면 `max_media_bytes` (평문 합계) 이하, 없으면 1 MiB 이하. 초과 시 업로드하지 않고 알림 (타입 off로 무시된 경우는 조용히 무시).
+크기: body에 image/file 엔트리가 있으면 `max_media_bytes` (평문 합계) 이하, 없으면 1 MiB 이하. 초과 시 업로드하지 않고 알림 (타입 off로 무시된 경우는 조용히 무시). 파일은 **내용을 읽기 전에** 파일 시스템 크기로 검사한다.
+
+- **header 이미지 크기**: `image {w,h}`는 PNG IHDR에서 읽는다(디코드하지 않음).
+- **Mac 알림 (D-52)**: 크기 초과·폴더 무시 등 사용자 조치가 필요한 알림은 `UNUserNotificationCenter`로 보낸다(최초 1회 사용자 허용 필요). Windows는 D-45.
+- **진행률 (D-53)**: v1(M5)은 메뉴/툴팁에 "보내는 중…/받는 중…" 상태만 표시한다. 퍼센트 진행률은 M7에서 필요하면 추가한다.
 
 서버 하드 캡: body 암호문 **51 MiB** 초과 시 413 (상수; 사용자 설정값과 무관).
 
@@ -234,6 +240,7 @@ CREATE TABLE config (
   - macOS: 커스텀 UTI `com.tobylee.clipsync.item`
   - Windows: `RegisterClipboardFormat("ClipSyncItemId")`
 - **2차: 콘텐츠 해시 dedupe (필수 방어)**. 마지막 송·수신 항목 5개의 해시를 60초간 보관하고, 같은 해시의 변경은 업로드하지 않는다. OS가 표현을 재합성하거나 줄바꿈을 바꿀 수 있으므로 해시는 **정규화 후** 계산한다: 텍스트/HTML은 CRLF→LF, 끝의 NUL 제거, NFC; 이미지는 디코드한 픽셀 데이터; 파일은 (정규화된 이름, 크기, 내용) 목록.
+- **미디어 에코 방지 (D-54)**: 1차는 마커. 해시 링에는 이미지 항목이면 **디코드한 픽셀**(w, h, RGBA)의 해시를, 파일 항목이면 (NFC 이름, 크기, SHA-256) 목록의 해시를 넣는다. D-49(적용 전 비교)는 텍스트 항목에만 적용한다. 픽셀 해시는 같은 기기 안에서만 비교한다(플랫폼 간 일치 불필요).
 - **적용 전 비교 (D-49)**: 적용하려는 항목의 해시가 현재 클립보드 내용의 해시와 같으면 쓰지 않는다 (RDP 리디렉션 on에서 RDP 동기화와 WS 이벤트가 경주할 때 재쓰기→재전파를 줄인다. 중복 업로드는 최대 1회로 한정됨).
 - **해시 입력 (D-41)**: 정규화한 plain text가 있으면 그것을, 없으면 정규화한 HTML을 해시한다 (RDP를 통과하는 것은 plain text이므로).
 - **RDP 클립보드 리디렉션 주의 (클라우드 Windows 환경)**: RDP는 Mac과 원격 Windows의 클립보드를 자체적으로 동기화한다. 이때 (a) 우리 앱과 무관하게 붙여넣기가 성공해 테스트가 오통과할 수 있고, (b) private 마커(커스텀 UTI/등록 포맷)는 RDP를 통과하지 못해 Windows가 방금 적용한 항목이 Mac 클립보드로 되돌아가 Mac 앱이 다시 업로드하는 **에코 루프**가 생길 수 있다. 따라서 해시 dedupe는 보조가 아니라 필수 방어이며, 개발·테스트는 RDP 클라이언트의 클립보드 리디렉션을 **끈 상태**를 기본으로 하고, 켠 상태의 에코 루프 테스트를 별도로 수행한다 (plan M4/M7).
@@ -249,7 +256,7 @@ CREATE TABLE config (
 
 ## 7. macOS 앱
 
-- **식별자/빌드 (D-38)**: 앱 이름 `ClipSync`, 번들 ID `com.tobylee.clipsync`(영구), 서명 ID `Apple Development: tobyilee@gmail.com (P7H3D7D535)`(SHA-1 `6ED556371620F93225B112869C65FCBBF3CDFD6F`), `codesign --identifier com.tobylee.clipsync`. Xcode 프로젝트 대신 SwiftPM 실행 타깃 + 번들 조립·서명 스크립트로 빌드해 고정 경로(`~/Applications/ClipSync.app`)에 설치한다. provisioning profile이 필요한 entitlement(keychain-access-groups 등)는 쓰지 않는다. SwiftPM 리소스(`Bundle.module`)는 쓰지 않고 데이터는 Swift 소스로 내장한다.
+- **식별자/빌드 (D-38)**: 앱 이름 `ClipSync`, 번들 ID `com.tobylee.clipsync`(영구), 서명 ID ~~`Apple Development: tobyilee@gmail.com (P7H3D7D535)`~~ → **자체 서명 `ClipSync Dev`(SHA-1 `0877300230D8AF6664E87DA91F5F78A15269E140`, D-55)**, `codesign --identifier com.tobylee.clipsync`. Xcode 프로젝트 대신 SwiftPM 실행 타깃 + 번들 조립·서명 스크립트로 빌드해 고정 경로(`~/Applications/ClipSync.app`)에 설치한다. provisioning profile이 필요한 entitlement(keychain-access-groups 등)는 쓰지 않는다. SwiftPM 리소스(`Bundle.module`)는 쓰지 않고 데이터는 Swift 소스로 내장한다.
 - 형태: `LSUIElement` 메뉴바 앱 (`NSStatusItem`), SwiftUI 메뉴 + AppKit. **App Sandbox 비활성** (개인 설치용). 로그인 시 자동 시작은 `SMAppService.mainApp`.
 - **서명 (권한 유지에 필수)**: 개인 설치용이라 공증·배포는 하지 않지만 **안정적인 서명 ID로 서명한다** — 무료 Apple Development 인증서(개인 팀) 또는 자체 서명 코드 서명 인증서. ad-hoc/무서명 빌드는 재빌드할 때마다 코드 정체성(designated requirement)이 달라져 pasteboard 허용, 파일 접근(TCC), Keychain 항목 접근이 초기화되고 프롬프트가 반복될 수 있다. 어느 ID를 쓸지는 M0에서 정하고, S-2에서 재빌드 후 권한 유지를 검증한다 (D-22).
 - **배포 타겟**: 최소 macOS 14 (`SMAppService` 등 사용 API 기준; S-2에서 확정). pasteboard 프라이버시 신규 API(`accessBehavior`, `detect*`)는 SDK 헤더 기준 **macOS 15.4+** 이므로 **`#available(macOS 15.4, *)` 게이트**로 감싸고, 미지원 OS에서는 기존 방식으로 동작한다 (S-2, D-29). 개발 기기는 macOS 26.6.2, Xcode 27.0.
@@ -388,3 +395,9 @@ CREATE TABLE config (
 | D-47 | 본문은 원문 유지, Windows `CF_UNICODETEXT` 적용 시에만 LF→CRLF | 양쪽 모두 원문 / 송신 시 정규화 | Windows 구형 컨트롤은 LF를 줄바꿈으로 보이지 않음. 해시는 정규화하므로 에코 방지에 영향 없음 |
 | D-48 | Windows HTML 송신은 CF_HTML fragment(오프셋 → 주석 폴백), plain text 없으면 태그 제거로 생성 | 전체 문서 전송 | 4.3의 fragment 규칙과 D-41 해시 기준 유지 |
 | D-49 | 적용하려는 항목의 해시가 현재 클립보드와 같으면 쓰지 않음 (Mac/Windows 공통) | 항상 적용 | RDP 리디렉션 on에서 경주로 생기는 재쓰기·재전파를 줄여 에코를 유한하게 만듦 |
+| D-50 | config는 저장될 version(If-Match+1)의 AAD로 봉인, 받는 쪽은 서버 version으로 열고 최고 version 초과만 수용·저장. 412면 재조회 후 바꾼 필드만 재적용해 1회 재시도 | 봉인 version 미정 | version을 AAD에 묶어 서버가 옛 blob을 새 version으로 바꿔 끼우는 것을 막음. PROTOCOL.md 4절 명시 |
+| D-51 | config `images`/`files` ↔ kinds `image`/`files` 매핑 함수 하나로 허용 종류 결정 | 앱마다 하드코딩 | 두 어휘가 달라 누락·오타 위험 |
+| D-52 | Mac 알림은 `UNUserNotificationCenter` (최초 1회 허용) | 메뉴 메시지만 | M5 완료 기준 "초과 시 알림" |
+| D-53 | M5 진행률은 상태 표시만, 퍼센트는 M7 | 퍼센트 구현 | 범위 통제. 20MB 업로드는 수 초 |
+| D-54 | 미디어 해시: 이미지=디코드 픽셀, 파일=(NFC 이름, 크기, SHA-256). D-49는 텍스트만 | 인코딩 바이트 해시 | OS가 PNG/TIFF/DIB를 재인코딩해도 같은 이미지를 같게 봄 |
+| D-55 | Mac 서명을 자체 서명 `ClipSync Dev`로 전환 (지정 요구사항 `certificate leaf = H"0877…"`) | Apple Development 재발급 | 2026-09-30 Apple Development 인증서가 원격 폐기되어(amfid `leaf Revocation`, CSSMERR_TP_CERT_REVOKED) 실행 시 "Malware Blocked and Moved to Bin"으로 앱이 휴지통으로 이동됨. 자체 서명은 원격 폐기 대상이 아님(사용자 결정). **대가:** 팀 ID가 없어 Keychain 파티션이 cdhash에 묶이므로 **재빌드마다 Keychain 접근 확인 창**(로그인 암호 + "항상 허용")이 한 번 뜬다. 설치 후 사용 중에는 뜨지 않는다. 불편하면 Apple Development 재발급으로 되돌린다(CN이 같으면 기존 권한 유지 가능성 큼) |

@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         if configuredVault() == nil { showOnboarding() } else { engine.start() }
+        Notifier.shared.requestAuthorization()   // 크기 초과 등 알림 (D-52), 최초 1회 허용
         updateIcon()
     }
 
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .off: dot = "○ 꺼짐"
         }
         menu.addItem(label("\(dot) · \(v.url.host ?? "")"))
+        if let b = engine.busy { menu.addItem(label("⇅ \(b)")) }
         if let m = engine.lastMessage { menu.addItem(label("⚠︎ \(m)")) }
         if PasteboardIO.accessNeedsAttention {
             menu.addItem(action("권한 필요: 시스템 설정에서 클립보드 접근 허용…", #selector(openPrivacySettings)))
@@ -84,6 +86,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pause)
         menu.addItem(toggle("보내기", on: settings.sendEnabled, #selector(toggleSend)))
         menu.addItem(toggle("받기", on: settings.receiveEnabled, #selector(toggleReceive)))
+        menu.addItem(.separator())
+
+        // vault 전체 설정 (Mac에서만 편집, D-17): 모든 기기가 따른다
+        let cfg = engine.config
+        let targets = NSMenuItem(title: "동기화 대상", action: nil, keyEquivalent: "")
+        let tsub = NSMenu()
+        let text = label("텍스트 (항상)")
+        text.state = .on
+        tsub.addItem(text)
+        tsub.addItem(toggle("이미지·스크린샷", on: cfg.images, #selector(toggleImages)))
+        tsub.addItem(toggle("파일", on: cfg.files, #selector(toggleFiles)))
+        targets.submenu = tsub
+        menu.addItem(targets)
+        let size = NSMenuItem(title: "미디어 최대 크기 (\(cfg.maxMediaBytes >> 20) MB)", action: nil, keyEquivalent: "")
+        let ssub = NSMenu()
+        for bytes in VaultConfig.mediaSizes {
+            let i = toggle("\(bytes >> 20) MB", on: cfg.maxMediaBytes == bytes, #selector(setMediaSize(_:)))
+            i.tag = bytes
+            ssub.addItem(i)
+        }
+        size.submenu = ssub
+        menu.addItem(size)
         menu.addItem(.separator())
 
         let recent = NSMenuItem(title: "최근 항목", action: nil, keyEquivalent: "")
@@ -109,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func recentTitle(_ r: SyncEngine.RecentItem) -> String {
         let time = Date(timeIntervalSince1970: Double(r.createdAt) / 1000).formatted(date: .omitted, time: .shortened)
         let src = r.deviceId == settings.deviceId ? "이 Mac" : "기기 \(r.deviceId.prefix(4))"
-        let kind = r.kinds.contains("html") ? "HTML" : "텍스트"
+        let kind = r.kinds.contains("files") ? "파일" : r.kinds.contains("image") ? "이미지" : r.kinds.contains("html") ? "HTML" : "텍스트"
         let text = r.preview.replacingOccurrences(of: "\n", with: " ")
         let short = text.count > 40 ? String(text.prefix(40)) + "…" : text
         return "\(time) · \(kind) · \(src)\(r.purged ? " · 서버에서 삭제됨" : "") \(short)"
@@ -151,6 +175,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateIcon()
     }
     @objc private func toggleSend() { settings.sendEnabled.toggle() }
+    @objc private func toggleImages() { let on = !engine.config.images; engine.updateConfig { $0.images = on } }
+    @objc private func toggleFiles() { let on = !engine.config.files; engine.updateConfig { $0.files = on } }
+    @objc private func setMediaSize(_ sender: NSMenuItem) { let b = sender.tag; engine.updateConfig { $0.maxMediaBytes = b } }
     @objc private func toggleReceive() { settings.receiveEnabled.toggle() }
     @objc private func pause15() { settings.pausedUntil = Date().addingTimeInterval(15 * 60); updateIcon() }
     @objc private func pause60() { settings.pausedUntil = Date().addingTimeInterval(60 * 60); updateIcon() }

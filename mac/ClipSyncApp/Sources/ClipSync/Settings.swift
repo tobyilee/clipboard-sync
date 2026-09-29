@@ -50,7 +50,17 @@ final class Settings {
         set { d.set(newValue, forKey: "lastAppliedSeq") }
     }
 
+    /// 지금까지 수용한 가장 높은 config version과 그 설정 (D-50). 없으면 텍스트만 (fail-closed).
+    var configVersion: Int {
+        get { d.integer(forKey: "configVersion") }
+        set { d.set(newValue, forKey: "configVersion") }
+    }
+    var vaultConfig: VaultConfig {
+        get { d.data(forKey: "vaultConfig").flatMap { try? JSONDecoder().decode(VaultConfig.self, from: $0) } ?? .failClosed }
+        set { d.set(try? JSONEncoder().encode(newValue), forKey: "vaultConfig") }
+    }
+
     func resetVaultState() {
-        for k in ["serverURL", "lastSeq", "lastAppliedSeq", "pausedUntil"] { d.removeObject(forKey: k) }
+        for k in ["serverURL", "lastSeq", "lastAppliedSeq", "pausedUntil", "configVersion", "vaultConfig"] { d.removeObject(forKey: k) }
     }
 }

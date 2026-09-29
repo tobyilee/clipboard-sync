@@ -115,6 +115,32 @@ private func makeClient(_ env: Env) throws -> ServerClient {
         await #expect(throws: ServerError.http(status: 401, op: "list")) { _ = try await bad.list() }
     }
 
+    /// D-50: TS가 쓴 설정을 Swift가 열고, Swift가 쓴 설정을 TS가 연다 (version AAD 포함).
+    @Test func configCrossReadWrite() async throws {
+        guard let env = Env.load() else { return }
+        let client = try makeClient(env)
+        _ = try runCLI(env, ["config-set", "images=on", "files=off", "max=10"])
+        let blob = try #require(try await client.getConfig())
+        #expect(try openConfig(blob, key: client.keys.encKey) == VaultConfig(images: true, files: false, maxMediaBytes: 10 << 20))
+        let (v, cfg) = try await client.writeConfig { $0.images = false; $0.maxMediaBytes = 20 << 20 }
+        #expect(v == blob.version + 1)
+        #expect(cfg == .failClosed)
+        let out = try runCLI(env, ["config-get"])
+        #expect(out.contains("\"version\":\(v)"))
+        #expect(out.contains("\"images\":false"))
+    }
+
+    /// R2 경로(>1.25 MiB)를 타는 이미지 번들을 Swift가 보내고 TS가 복호화한다.
+    @Test func largeImageBundleCrossesR2() async throws {
+        guard let env = Env.load() else { return }
+        var png = [UInt8](MediaTests.samplePNG())
+        png += [UInt8](repeating: 0, count: 2 << 20)   // IHDR는 그대로, 뒤에 패딩(크기 확인용)
+        let sent = try await makeClient(env).send(entries: [BundleEntry(type: 3, name: "", data: png)], kinds: ["image"])
+        let out = try runCLI(env, ["list"])
+        let line = try #require(out.split(separator: "\n").first { $0.contains(sent.id) })
+        #expect(line.contains("\"bytes\":\(png.count)"))
+    }
+
     /// D-28: 서버가 "ping"이 아닌 텍스트에는 응답하지 않으므로 "xping"을 보내면 pong이 끊긴 상황을 재현한다.
     @Test func silentConnectionIsClosedAfterPongTimeout() async throws {
         guard let env = Env.load() else { return }

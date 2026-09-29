@@ -18,6 +18,10 @@ sealed class Settings
     /// 실제로 적용한 가장 높은 seq (spec 6.1 last_applied_seq).
     [JsonPropertyName("lastAppliedSeq")] public long? LastAppliedSeq { get; set; }
 
+    /// 지금까지 수용한 가장 높은 config version과 그 설정 (D-50). 없으면 텍스트만 (fail-closed).
+    [JsonPropertyName("configVersion")] public long ConfigVersion { get; set; }
+    [JsonPropertyName("vaultConfig")] public VaultConfig VaultConfig { get; set; } = VaultConfig.FailClosed;
+
     [JsonIgnore] public Uri? ServerUri => ServerUrl is null ? null : ServerUrlInput.Parse(ServerUrl);
 
     [JsonIgnore]

@@ -58,13 +58,32 @@ static class SelfTest
             while (notified == 0 && Environment.TickCount64 < until) { Application.DoEvents(); Thread.Sleep(10); }
             return notified > 0 ? null : "no message within 1s";
         });
-        Check("read sees own marker", () => ClipboardIO.Read(hwnd) is ClipboardIO.ReadResult.OwnMarker ? null : "marker not detected");
+        Check("shape sees own marker", () => ClipboardIO.GetShape().Own ? null : "marker not detected");
         Check("text applied as CRLF (D-47)", () =>
             ClipboardIO.ReadRaw(hwnd)?.Plain == "selftest 한글 🎉\r\nline2" ? null : "got: " + Escape(ClipboardIO.ReadRaw(hwnd)?.Plain));
         Check("CF_HTML fragment round-trip (Korean/emoji offsets)", () =>
             ClipboardIO.ReadRaw(hwnd)?.Html == frag ? null : "got: " + Escape(ClipboardIO.ReadRaw(hwnd)?.Html));
         Check("CurrentHash equals hash of original LF text (D-49)", () =>
-            ClipboardIO.CurrentHash(hwnd) == SyncLogic.ContentHash(text, frag) ? null : "hash differs");
+            ClipboardIO.CurrentTextHash(hwnd) == SyncLogic.ContentHash(text, frag) ? null : "hash differs");
+
+        // 이미지: PNG + CF_DIBV5 를 함께 쓰고, 두 포맷을 각각 읽어 픽셀을 비교한다 (S-3 알파 램프)
+        var ramp = Ramp(96, 64);
+        var rampPng = Imaging.EncodePng(ramp);
+        Check("write PNG + CF_DIBV5 with marker", () =>
+        {
+            ClipboardIO.Write(hwnd, [new BundleEntry(3, "", rampPng)], id, Imaging.BgraToDibV5(ramp));
+            return null;
+        });
+        Check("PNG read back decodes (GDI+) to same pixels", () =>
+            ClipboardIO.ReadFormat(hwnd, ClipboardIO.FmtPng) is { } p && ImageCodec.DecodePng(p).Pixels.SequenceEqual(ramp.Pixels) ? null : "pixels differ");
+        Check("CF_DIBV5 read back keeps straight alpha", () =>
+            ClipboardIO.ReadFormat(hwnd, Native.CF_DIBV5) is { } d && Imaging.DibToBgra(d) is { } b && b.Pixels.SequenceEqual(ramp.Pixels) ? null : "pixels differ");
+        Check("image read prefers PNG, pixel hash stable", () =>
+        {
+            var raw = ClipboardIO.ReadImage(hwnd, out _);
+            if (raw is null || !raw.IsPng) return "PNG not preferred";
+            return ImageCodec.Normalize(raw) is { } n && Imaging.PixelHash(n.Pixels) == Imaging.PixelHash(ramp) ? null : "hash differs";
+        });
 
         var settings = Settings.Load();
         string? pass = null;
@@ -91,6 +110,18 @@ static class SelfTest
         Log.Info(summary.Replace("\n", " | "));
         MessageBox.Show(summary, "ClipSync selftest", MessageBoxButtons.OK, failed == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error);
         return failed == 0 ? 0 : 1;
+    }
+
+    static Bgra Ramp(int w, int h)
+    {
+        var px = new byte[w * h * 4];
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                var i = (y * w + x) * 4;
+                px[i] = 128; px[i + 1] = (byte)(255 - y * 3); px[i + 2] = (byte)(20 + y * 3); px[i + 3] = (byte)(x * 255 / (w - 1));
+            }
+        return new Bgra(w, h, px);
     }
 
     static string Escape(string? s) => s is null ? "(null)" : s.Replace("\r", "\\r").Replace("\n", "\\n");
