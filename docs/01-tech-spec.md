@@ -234,12 +234,13 @@ CREATE TABLE config (
   - macOS: 커스텀 UTI `com.tobylee.clipsync.item`
   - Windows: `RegisterClipboardFormat("ClipSyncItemId")`
 - **2차: 콘텐츠 해시 dedupe (필수 방어)**. 마지막 송·수신 항목 5개의 해시를 60초간 보관하고, 같은 해시의 변경은 업로드하지 않는다. OS가 표현을 재합성하거나 줄바꿈을 바꿀 수 있으므로 해시는 **정규화 후** 계산한다: 텍스트/HTML은 CRLF→LF, 끝의 NUL 제거, NFC; 이미지는 디코드한 픽셀 데이터; 파일은 (정규화된 이름, 크기, 내용) 목록.
+- **적용 전 비교 (D-49)**: 적용하려는 항목의 해시가 현재 클립보드 내용의 해시와 같으면 쓰지 않는다 (RDP 리디렉션 on에서 RDP 동기화와 WS 이벤트가 경주할 때 재쓰기→재전파를 줄인다. 중복 업로드는 최대 1회로 한정됨).
 - **해시 입력 (D-41)**: 정규화한 plain text가 있으면 그것을, 없으면 정규화한 HTML을 해시한다 (RDP를 통과하는 것은 plain text이므로).
 - **RDP 클립보드 리디렉션 주의 (클라우드 Windows 환경)**: RDP는 Mac과 원격 Windows의 클립보드를 자체적으로 동기화한다. 이때 (a) 우리 앱과 무관하게 붙여넣기가 성공해 테스트가 오통과할 수 있고, (b) private 마커(커스텀 UTI/등록 포맷)는 RDP를 통과하지 못해 Windows가 방금 적용한 항목이 Mac 클립보드로 되돌아가 Mac 앱이 다시 업로드하는 **에코 루프**가 생길 수 있다. 따라서 해시 dedupe는 보조가 아니라 필수 방어이며, 개발·테스트는 RDP 클라이언트의 클립보드 리디렉션을 **끈 상태**를 기본으로 하고, 켠 상태의 에코 루프 테스트를 별도로 수행한다 (plan M4/M7).
 
 ### 6.5 재연결 (NFR-3)
 - **catch-up 순서 (D-42)**: 연결 후 WS 이벤트는 `GET /v1/items?since=last_seq`가 끝날 때까지 버퍼링했다가 seq 순으로 처리한다. `seq <= last_seq`이거나 `device_id`가 자기 자신이면 건너뛴다. 첫 실행/페어링 직후 `last_seq`는 `hello.seq`로 초기화한다 (6.3-4).
-- **하트비트**: 텍스트 메시지 `"ping"`을 보낸다 (Swift `sendPing()` 같은 제어 프레임은 DO auto-response와 매칭되지 않는다).
+- **하트비트**: 텍스트 메시지 `"ping"`을 보낸다 (Swift `sendPing()`, .NET `ClientWebSocket.KeepAliveInterval` 같은 제어 프레임은 DO auto-response와 매칭되지 않는다). 90초간 아무 메시지도 없으면 끊고 재연결.
 - 지수 백오프 + jitter (1s → 최대 60s). 성공 시 `last_seq` 기준 catch-up 후 6.3 적용.
 - 슬립/웨이크 이벤트 시 즉시 재연결 (macOS `NSWorkspace.didWakeNotification`, Windows `SystemEvents.PowerModeChanged`).
 
@@ -290,8 +291,13 @@ CREATE TABLE config (
   | image | `PNG` 등록 포맷 + `CF_DIBV5` **둘 다** 기록, 읽을 때는 PNG 우선 |
   | files | `CF_HDROP` (`%LOCALAPPDATA%\ClipboardSync\incoming\<item_id>\` = 로컬 캐시, Mac과 동일 정리 정책) |
 - 읽을 때 `PNG`가 없고 `CF_DIBV5`/`CF_DIB`만 있으면 PNG로 변환해 전송한다 (알파 보존, 4.3).
-- 우리가 쓰는 클립보드 항목에는 `CanUploadToCloudClipboard = 0`을 지정한다.
-- 대용량 업로드/다운로드는 `HttpClient` 스트리밍(진행률 표시). 자격 증명: Credential Manager (DPAPI). 토스트 알림은 비패키지 앱이므로 AUMID 등록 필요 — 구현 시 확인.
+- 우리가 쓰는 클립보드 항목에는 `CanUploadToCloudClipboard = 0`(DWORD)을 지정한다.
+- **에코 마커/자기 쓰기 (D-44)**: 마커는 `RegisterClipboardFormat("ClipSyncItemId")`에 item_id 16바이트. 쓴 직후 `GetClipboardSequenceNumber()`를 기억해 그 변경은 건너뛴다(마커 검사는 보조).
+- **프로젝트 구성 (D-46)**: `ClipSync.Core`(net10.0, OS 무관: 서버 클라이언트·CF_HTML·해시·catch-up 등 테스트 가능한 로직)와 `ClipSync.App`(net10.0-windows WinForms: Win32 클립보드, Credential Manager, NotifyIcon, `HKCU Run`)로 나눈다. 테스트는 Core만 참조해 Mac에서도 실행된다. SDK는 `global.json`으로 10.0.401 고정.
+- **저장 (D-46)**: passphrase는 Credential Manager generic credential(대상 `ClipSync/passphrase`, 자체 테스트는 다른 대상), 기기 설정은 `%LOCALAPPDATA%\ClipboardSync\settings.json`, 로그는 `%LOCALAPPDATA%\ClipboardSync\logs\`(메타데이터만, **클립보드 내용·passphrase는 기록하지 않음**). 중복 실행은 named mutex로 막는다(같은 device_id로 이중 업로드 방지).
+- **줄바꿈 (D-47)**: 전송 본문은 원문 유지. Windows가 `CF_UNICODETEXT`에 적용할 때만 단독 LF를 CRLF로 바꾼다(Windows 규약). Mac 적용은 원문 유지.
+- **HTML (D-48)**: 송신은 `CF_HTML`의 StartFragment~EndFragment를 fragment로 쓰고(오프셋이 깨졌으면 `<!--StartFragment-->` 주석으로 폴백), `CF_UNICODETEXT`가 없으면 태그 제거로 plain text를 만든다(D-41).
+- 대용량 업로드/다운로드는 `HttpClient` 스트리밍(진행률 표시; 길이를 모르는 `StreamContent`는 chunked가 되어 서버가 411을 반환하므로 길이를 명시). 자격 증명: Credential Manager (DPAPI). **알림은 v1에서 `NotifyIcon.ShowBalloonTip` + 메뉴 메시지 (D-45; 토스트용 AUMID 등록 불필요).**
 
 ## 9. 보안 정리 (NFR-1 검증 관점)
 | 위협 | 대응 |
@@ -376,3 +382,9 @@ CREATE TABLE config (
 | D-41 | 해시 입력은 정규화 plain text 우선, 없으면 정규화 HTML | 항상 HTML | RDP 등이 재합성해도 plain text는 유지됨 |
 | D-42 | catch-up 동안 WS 이벤트 버퍼링 후 seq 순 처리, `seq<=last_seq`·자기 기기 항목 건너뜀, 첫 실행은 `last_seq=hello.seq`, 하트비트는 텍스트 `ping` | 즉시 처리 | 조회와 이벤트가 겹쳐 순서·중복이 어긋나는 것을 방지, 과거 항목 자동 적용 방지 |
 | D-43 | passphrase 생성은 EFF large wordlist(7776) 7단어를 `SecRandomCopyBytes` + 거절 샘플링으로 뽑고 ClipSyncCore에 둠 (단어 목록은 Swift 소스로 내장) | 나머지 연산(편향) | 7776은 2의 거듭제곱이 아니라 modulo는 편향됨 |
+| D-44 | Windows 에코 마커는 `ClipSyncItemId` 등록 포맷(item_id 16B), 자기 쓰기는 `GetClipboardSequenceNumber`로 건너뜀 | S-3 스파이크의 `application/x-clipsync-marker` | spec 6.4의 이름으로 통일. 시퀀스 번호는 Mac의 `changeCount`와 같은 역할 |
+| D-45 | Windows 알림은 v1에서 `NotifyIcon.ShowBalloonTip` + 메뉴 메시지 | 토스트(AUMID 등록) | 비패키지 앱의 AUMID 등록과 영구 이름 결정을 피함. Windows 10/11은 balloon을 알림 센터에 표시 |
+| D-46 | Windows는 Core(net10.0)/App(net10.0-windows) 분리, `global.json` 10.0.401. Credential Manager `ClipSync/passphrase`, `%LOCALAPPDATA%\ClipboardSync\`에 설정·로그(내용 미기록), named mutex 단일 실행 | 단일 프로젝트 | Mac에서 Core 테스트·서버 상호운용·앱 컴파일을 먼저 확인해 Cloud PC 왕복을 줄임. Mac `--selftest-keychain` 사고와 같은 실수를 막기 위해 테스트 대상 분리 |
+| D-47 | 본문은 원문 유지, Windows `CF_UNICODETEXT` 적용 시에만 LF→CRLF | 양쪽 모두 원문 / 송신 시 정규화 | Windows 구형 컨트롤은 LF를 줄바꿈으로 보이지 않음. 해시는 정규화하므로 에코 방지에 영향 없음 |
+| D-48 | Windows HTML 송신은 CF_HTML fragment(오프셋 → 주석 폴백), plain text 없으면 태그 제거로 생성 | 전체 문서 전송 | 4.3의 fragment 규칙과 D-41 해시 기준 유지 |
+| D-49 | 적용하려는 항목의 해시가 현재 클립보드와 같으면 쓰지 않음 (Mac/Windows 공통) | 항상 적용 | RDP 리디렉션 on에서 경주로 생기는 재쓰기·재전파를 줄여 에코를 유한하게 만듦 |

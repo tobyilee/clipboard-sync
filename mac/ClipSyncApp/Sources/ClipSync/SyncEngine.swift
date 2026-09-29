@@ -145,8 +145,13 @@ final class SyncEngine {
             guard let entries = r.entries else { lastMessage = "서버에서 삭제된 항목입니다"; onChange(); return }
             let plain = entries.first { $0.type == 1 }.map { String(decoding: $0.data, as: UTF8.self) }
             let html = entries.first { $0.type == 2 }.map { String(decoding: $0.data, as: UTF8.self) }
-            if let h = contentHash(plainText: plain, html: html) { ring.add(h) }   // 되돌아오는 변경을 업로드하지 않도록 (D-24)
-            lastChangeCount = PasteboardIO.write(entries: entries, itemId: it.id)
+            let hash = contentHash(plainText: plain, html: html)
+            if let hash { ring.add(hash) }   // 되돌아오는 변경을 업로드하지 않도록 (D-24)
+            if let hash, hash == PasteboardIO.currentHash() {
+                // D-49: 이미 같은 내용이면 다시 쓰지 않는다 (RDP 리디렉션 on에서 재쓰기→재전파를 줄인다)
+            } else {
+                lastChangeCount = PasteboardIO.write(entries: entries, itemId: it.id)
+            }
             settings.lastAppliedSeq = max(settings.lastAppliedSeq ?? 0, it.seq)
         } catch {
             if !Task.isCancelled { lastMessage = "적용 실패: \(error)"; onChange() }

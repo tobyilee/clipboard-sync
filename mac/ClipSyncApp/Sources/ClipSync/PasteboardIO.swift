@@ -59,6 +59,18 @@ enum PasteboardIO {
         return pb.changeCount
     }
 
+    /// D-49용: 현재 pasteboard 내용의 해시 (마커 유무와 관계없이). plain text 우선.
+    static func currentHash(_ pb: NSPasteboard = .general) -> String? {
+        let types = pb.types ?? []
+        var plain = types.contains(.string) ? pb.string(forType: .string) : nil
+        var html: String?
+        if plain == nil, types.contains(htmlType), let d = pb.data(forType: htmlType) {
+            html = String(data: d, encoding: .utf8)
+            plain = html.flatMap { plainText(fromHTML: $0) }
+        }
+        return contentHash(plainText: plain, html: html)
+    }
+
     /// macOS 15.4+ pasteboard 프라이버시: `.ask`/`.alwaysDeny`일 때만 권한 안내가 필요하다 (D-29).
     static var accessNeedsAttention: Bool {
         if #available(macOS 15.4, *) {
