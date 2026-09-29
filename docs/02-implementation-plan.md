@@ -38,7 +38,7 @@ M2 서버 ──────────────┬────────�
 | 항목 | 내용 |
 |---|---|
 | Cloudflare | 계정, `wrangler` 로그인, R2 활성화(결제 수단 필요 여부 확인). **요금제는 Workers Free로 확정**(사용자 결정)하고 Free에서 R2 binding / SQLite 기반 DO / Rate Limiting binding이 모두 되는지 확인한다 (조사상 DO·Rate Limiting은 Free 가능, R2 binding은 미확인 → S-1로 검증) |
-| Mac | Xcode(macOS 26 SDK 포함), 개발 기기는 macOS 26. **서명 ID 확정: `Apple Development: tobyilee@gmail.com (P7H3D7D535)`** (팀 ID `P7H3D7D535`, 이 Mac의 키체인에 유효한 상태로 존재 — `security find-identity -v -p codesigning`으로 확인). 프로젝트에 고정하며 ad-hoc 서명 금지. 최소 배포 타겟은 macOS 14 가정, 신규 pasteboard API는 `#available` 게이트 |
+| Mac | Xcode(macOS 26 SDK 포함), 개발 기기는 macOS 26. **서명 ID 확정: `Apple Development: tobyilee@gmail.com (P7H3D7D535)`** (인증서 CN의 `P7H3D7D535`는 사용자 ID이고 실제 TeamIdentifier는 `4T2Y2T7SHU`, 이 Mac의 키체인에 유효한 상태로 존재 — `security find-identity -v -p codesigning`으로 확인). 프로젝트에 고정하며 ad-hoc 서명 금지. 최소 배포 타겟은 macOS 14 가정, 신규 pasteboard API는 `#available` 게이트 |
 | Windows | **.NET 10 SDK (LTS)** — .NET 8/9는 2026-11-10 지원 종료. 클라우드 Windows(RDP 접속)에서 빌드·실행하며 GUI 데스크톱 세션이 필요. RDP 클립보드 리디렉션을 끌 수 있는 클라이언트 설정 확인 |
 | 저장소 | `git init`, 모노레포 디렉터리(`protocol/ server/ mac/ windows/`), `.gitignore`, 루트 README (문서 링크) |
 

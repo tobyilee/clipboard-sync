@@ -16,6 +16,11 @@ const show = (r: Awaited<ReturnType<Peer['receive']>>) =>
 
 if (cmd === 'send' && arg !== undefined) {
   console.log(JSON.stringify(await peer.sendText(arg)));
+} else if (cmd === 'send-html' && arg !== undefined) {
+  // send-html HTML [PLAIN]: HTML fragment(+선택적 plain text fallback) 항목을 보낸다
+  const plain = process.argv[4];
+  const entries = [{ type: 1, name: '', data: Buffer.from(plain ?? '', 'utf8') }, { type: 2, name: '', data: Buffer.from(arg, 'utf8') }];
+  console.log(JSON.stringify(await peer.send(plain === undefined ? entries.slice(1) : entries, plain === undefined ? ['html'] : ['text', 'html'], plain)));
 } else if (cmd === 'list') {
   for (const i of await peer.list()) {
     try {
@@ -38,6 +43,6 @@ if (cmd === 'send' && arg !== undefined) {
   await w.opened;
   console.error(`watching as device ${peer.deviceId} (Ctrl+C to stop)`);
 } else {
-  console.error('usage: send TEXT | list | watch | delete ID | config');
+  console.error('usage: send TEXT | send-html HTML [PLAIN] | list | watch | delete ID | config');
   process.exit(2);
 }

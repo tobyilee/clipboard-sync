@@ -104,8 +104,16 @@ public final class ServerClient: Sendable {
 
     // MARK: 송신
 
-    /// 2단계 업로드(PUT body → POST commit, 둘 다 idempotent). 재시도는 호출자가 한다.
-    public func send(entries: [BundleEntry], kinds: [String], previewText: String? = nil) async throws -> (id: String, seq: Int) {
+    /// 암호화까지 끝낸 업로드 단위. 재시도는 **같은 PreparedItem**을 다시 `upload`한다 (PUT/POST 모두 idempotent라 중복 항목이 생기지 않는다).
+    public struct PreparedItem: Sendable {
+        public let id: String
+        let sealedBody: [UInt8]
+        let sealedHeader: [UInt8]
+        public let createdAt: UInt64
+        public var bodySize: Int { sealedBody.count }
+    }
+
+    public func prepare(entries: [BundleEntry], kinds: [String], previewText: String? = nil) throws -> PreparedItem {
         let id = try randomBytes(16)
         let dev = hexDecode(deviceId)!
         let createdAt = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -113,21 +121,31 @@ public final class ServerClient: Sendable {
         var header: [String: Any] = ["v": 1, "kinds": kinds, "body_plain_size": body.count]
         if let previewText { header["preview"] = previewOf(previewText) }
         let headerJSON = try JSONSerialization.data(withJSONObject: header)
-        let sealedBody = try seal(key: keys.encKey, aad: itemAad(itemId: id, deviceId: dev, createdAtMs: createdAt, part: .body), plaintext: body)
-        let sealedHeader = try seal(key: keys.encKey, aad: itemAad(itemId: id, deviceId: dev, createdAtMs: createdAt, part: .header), plaintext: [UInt8](headerJSON))
-        let idHex = uuidHex(id)
+        return PreparedItem(
+            id: uuidHex(id),
+            sealedBody: try seal(key: keys.encKey, aad: itemAad(itemId: id, deviceId: dev, createdAtMs: createdAt, part: .body), plaintext: body),
+            sealedHeader: try seal(key: keys.encKey, aad: itemAad(itemId: id, deviceId: dev, createdAtMs: createdAt, part: .header), plaintext: [UInt8](headerJSON)),
+            createdAt: createdAt)
+    }
 
-        let put = request("/v1/items/\(idHex)/body", method: "PUT", headers: ["X-Device-Id": deviceId])
-        let (_, putResp) = try await session.upload(for: put, from: Data(sealedBody))
+    /// 2단계 업로드(PUT body → POST commit). 반환: 서버가 부여한 seq.
+    public func upload(_ item: PreparedItem) async throws -> Int {
+        let put = request("/v1/items/\(item.id)/body", method: "PUT", headers: ["X-Device-Id": deviceId])
+        let (_, putResp) = try await session.upload(for: put, from: Data(item.sealedBody))
         try expect(putResp, 204, "PUT body")
 
-        let post = request("/v1/items", method: "POST", headers: ["X-Item-Id": idHex, "X-Device-Id": deviceId, "X-Created-At": String(createdAt)])
-        let (data, postResp) = try await session.upload(for: post, from: Data(sealedHeader))
+        let post = request("/v1/items", method: "POST", headers: ["X-Item-Id": item.id, "X-Device-Id": deviceId, "X-Created-At": String(item.createdAt)])
+        let (data, postResp) = try await session.upload(for: post, from: Data(item.sealedHeader))
         try expect(postResp, 200, "POST commit")
         guard let seq = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["seq"] as? Int else {
             throw ServerError.badResponse("commit response")
         }
-        return (idHex, seq)
+        return seq
+    }
+
+    public func send(entries: [BundleEntry], kinds: [String], previewText: String? = nil) async throws -> (id: String, seq: Int) {
+        let item = try prepare(entries: entries, kinds: kinds, previewText: previewText)
+        return (item.id, try await upload(item))
     }
 
     public func sendText(_ text: String) async throws -> (id: String, seq: Int) {
@@ -192,9 +210,12 @@ public final class ServerClient: Sendable {
 
     // MARK: WebSocket
 
-    /// 서버 이벤트 스트림. 30초마다 텍스트 "ping"을 보낸다 (제어 프레임 ping은 DO auto-response와 맞지 않는다, D-42).
+    /// 서버 이벤트 스트림. 텍스트 "ping"을 `pingInterval`(기본 30초)마다 보내고, `pongTimeout`(기본 90초) 동안 아무 메시지도 없으면
+    /// 연결을 끊고 `.closed`를 내보낸다 (D-28; 슬립 없이 네트워크만 바뀌면 소켓이 반쯤 열린 채 남을 수 있다).
+    /// 제어 프레임 ping은 DO auto-response와 맞지 않으므로 텍스트를 쓴다 (D-42). `pingPayload`는 타임아웃 경로 테스트용.
     /// 스트림을 끝내면(취소 포함) 연결도 닫힌다. 재연결/백오프는 호출자 책임.
-    public func events() -> AsyncStream<ServerEvent> {
+    public func events(pingInterval: Duration = .seconds(30), pongTimeout: Duration = .seconds(90),
+                       pingPayload: String = "ping") -> AsyncStream<ServerEvent> {
         var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         comps.scheme = comps.scheme == "https" ? "wss" : "ws"
         comps.path = "/v1/ws"
@@ -202,18 +223,25 @@ public final class ServerClient: Sendable {
         var req = URLRequest(url: comps.url!)
         req.setValue(bearer, forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: req)
+        let liveness = Liveness()
         return AsyncStream { continuation in
             let pinger = Task {
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(30))
+                    try? await Task.sleep(for: pingInterval)
                     if Task.isCancelled { break }
-                    try? await task.send(.string("ping"))
+                    if await liveness.silence() > pongTimeout {
+                        continuation.yield(.closed("no pong for \(pongTimeout)"))
+                        continuation.finish()      // onTermination이 소켓을 닫는다
+                        break
+                    }
+                    try? await task.send(.string(pingPayload))
                 }
             }
             let reader = Task {
                 do {
                     while !Task.isCancelled {
                         let msg = try await task.receive()
+                        await liveness.touch()
                         guard case .string(let s) = msg, s != "pong", let ev = Self.parseEvent(s) else { continue }
                         continuation.yield(ev)
                     }
@@ -229,6 +257,13 @@ public final class ServerClient: Sendable {
             }
             task.resume()
         }
+    }
+
+    /// 마지막 메시지(pong 포함) 수신 시각.
+    private actor Liveness {
+        private var last = ContinuousClock.now
+        func touch() { last = .now }
+        func silence() -> Duration { ContinuousClock.now - last }
     }
 
     static func parseEvent(_ s: String) -> ServerEvent? {

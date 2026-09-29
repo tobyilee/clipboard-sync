@@ -114,4 +114,39 @@ private func makeClient(_ env: Env) throws -> ServerClient {
         let bad = try ServerClient(baseURL: env.url, keys: deriveKeys(passphrase: "wrong passphrase not registered"))
         await #expect(throws: ServerError.http(status: 401, op: "list")) { _ = try await bad.list() }
     }
+
+    /// D-28: 서버가 "ping"이 아닌 텍스트에는 응답하지 않으므로 "xping"을 보내면 pong이 끊긴 상황을 재현한다.
+    @Test func silentConnectionIsClosedAfterPongTimeout() async throws {
+        guard let env = Env.load() else { return }
+        let events = try makeClient(env).events(pingInterval: .seconds(1), pongTimeout: .seconds(3), pingPayload: "xping")
+        var it = events.makeAsyncIterator()
+        guard case .hello? = await it.next() else { Issue.record("expected hello"); return }
+        let start = ContinuousClock.now
+        var closed: String?
+        while let ev = await it.next() { if case .closed(let why) = ev { closed = why; break } }
+        #expect(closed?.contains("no pong") == true)
+        #expect(ContinuousClock.now - start < .seconds(10))
+        withExtendedLifetime(events) {}
+    }
+
+    /// 대조군: 올바른 "ping"이면 같은 짧은 타임아웃에서도 연결이 유지된다.
+    @Test func properPingKeepsConnectionAlive() async throws {
+        guard let env = Env.load() else { return }
+        let events = try makeClient(env).events(pingInterval: .seconds(1), pongTimeout: .seconds(3))
+        let ended = EndedFlag()
+        let watcher = Task {
+            var it = events.makeAsyncIterator()
+            while let ev = await it.next() { if case .closed = ev { break } }
+            await ended.set()
+        }
+        try await Task.sleep(for: .seconds(7))   // 타임아웃(3초)의 두 배 넘게 유지되어야 한다
+        let wasClosed = await ended.value
+        watcher.cancel()
+        #expect(!wasClosed, "ping/pong should keep the connection open past the timeout")
+    }
+}
+
+private actor EndedFlag {
+    private(set) var value = false
+    func set() { value = true }
 }

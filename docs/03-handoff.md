@@ -12,11 +12,11 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M2 마무리**(CLI 피어 네트워킹, Free 한도 실측) 후 **M3 macOS 앱** |
+| 다음 작업 | **M3 마무리**(사용자 수동 확인 항목, 알림) 후 **M4 Windows 앱** |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
-2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-37**)
+2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-43**)
 3. `02-implementation-plan.md` — 어떤 순서로 (M0~M7, 완료 기준, 스파이크, 위험)
 4. `spikes.md` — 스파이크별 결과 (가정 / 결과 / 설계 변경)
 5. 이 문서 — 지금 어디까지 왔고, 무엇이 확정/미확정인지
@@ -75,6 +75,13 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
    - Cloud PC `dotnet test windows\ClipSync.sln` 9개 통과. 처음에는 NuGet 소스 문제(`NU1100`)로 복원이 실패했고 재시도로 해결됨(원인 미확인, 부동 버전은 고정함).
    - `swift test`가 `TestingMacros plugin not found`로 실패하면 `rm -rf mac/ClipSyncCore/.build` 후 재실행(다른 툴체인이 만든 캐시 위 증분 빌드에서 간헐 발생, 콜드 빌드는 CLT/Xcode 모두 통과).
 1. **M2 서버: 구현·테스트·개발 배포 완료(미커밋).** `server/`(Worker+DO+R2), `vitest` 22개 통과, 로컬 `wrangler dev`와 배포(`https://clipsync-dev.clipboardsync.workers.dev`, 버킷 `clipsync-dev-bodies` + 1일 lifecycle, secret `VAULT_ID`=테스트 벡터 값)에서 `server/scripts/smoke.mjs --big`(20 MiB 왕복→삭제→410, 409, 413) 통과. D-34~D-37 반영. **CLI 테스트 피어 네트워킹 완료**(`protocol/ref/src/peer.ts`, `cli.ts`: Node 24 내장 fetch/WebSocket만 사용, WebSocket은 두 번째 인자 `{headers}`로 Authorization 전달 확인). 서버 통합 테스트는 `CLIPSYNC_URL`/`CLIPSYNC_PASSPHRASE`가 있을 때만 실행되며(예: 개발 배포 URL + 테스트 벡터 passphrase `abacus abdomen abide abnormal abrasion abroad absence`) 실제 암호화 왕복(텍스트 inline, 2 MiB R2, 수신 삭제, 401)이 통과했다. 배포 환경에서 429 확인(병렬 60건 중 35건; 순차 16건은 429가 안 걸림: Rate Limiting binding 카운터는 위치별·최종 일관성이라 순차 소량 실패는 통과할 수 있음, 방어는 확률적). **남은 것:** Workers Free 일일 한도 실측(요청·DO 실행시간은 M3~M4에서 실제 사용 패턴으로 확인). 프로덕션 배포는 M7.
+1a. **M3 macOS 앱: 구현·자동 검증 완료(미커밋 포함), 수동 확인 대기.** `mac/ClipSyncApp`(SwiftPM 실행 타깃) + `mac/scripts/build-app.sh`(번들 조립·서명·`~/Applications` 설치, 지정 요구사항이 인증서 기반인지 검사). `ClipSyncCore`에 `ServerClient`(prepare/upload로 재시도 시 같은 id), `PassphraseGenerator`(EFF 7단어, 거절 샘플링), `SyncLogic`(해시 정규화·dedupe 링, HTML fragment, catch-up 계획), `RTFConversion`, `ServerURLInput`. Swift 테스트 36개 통과(서버 교차·하트비트 타임아웃 테스트는 `CLIPSYNC_URL`/`CLIPSYNC_PASSPHRASE`가 있을 때만). 앱: 온보딩(연결 테스트 후 Keychain 저장), 메뉴(연결 상태, 동기화/보내기/받기, 일시정지, 최근 항목 20개, 로그인 시 자동 시작), `SyncEngine`(250ms 폴링 → 송신, WebSocket → 적용, 지수 백오프 재연결, 슬립/웨이크 재연결).
+   - **자동 검증 결과(실앱 ↔ `clipsync-dev` ↔ CLI 피어):** CLI→Mac 텍스트, Mac→CLI 텍스트, CLI HTML→Mac(`<meta charset>` 추가, 한글·이모지 유지), Mac RTF만 → HTML fragment(style 유지, 한글 정상) 전송, 에코 없음(적용 후 재업로드 없음), 보내기 off/받기 off/일시정지 동작, 재개 후 업로드. Keychain 저장·조회·삭제가 서명 번들에서 프롬프트 없이 통과(`ClipSync --selftest-keychain`).
+   - **사용자 수동 확인 대기:** 앱 재빌드 후 프롬프트 재발 없음, 로그인 시 자동 시작 승인, 메뉴 UI 조작(일시정지·토글·최근 항목 복원).
+   - **하트비트(D-28)**: 텍스트 ping 30초, 90초간 메시지가 없으면 소켓을 끊고 재연결(`events(pingInterval:pongTimeout:pingPayload:)`, 서버 상대 통합 테스트로 타임아웃 경로와 정상 ping 대조군 확인). 상태 워터마크는 `lastSeq`(목록)와 `lastAppliedSeq`(적용)로 분리해 저장한다. **현재 동작(spec 완료 아님):** 일시정지·받기 off 중 도착한 항목은 `lastSeq`가 넘어가 해제 후에도 적용되지 않으며, 전체 off→on/앱 재시작 후에는 catch-up이 최신 항목을 무조건 적용한다(로컬 우선 규칙 미구현, M6).
+   - `--selftest-keychain`은 실제 항목(account `passphrase`)과 분리된 account `selftest`를 쓴다. RTF/HTML만 있는 복사에도 plain text fallback을 함께 보낸다(kinds `["text","html"]`).
+   - **미구현(이후 마일스톤):** 알림(spec 6.6, 지금은 메뉴에 메시지 표시), 로컬 우선·pending(M6), 이미지/파일·vault 설정(M5), 일시정지/off 해제 직후 catch-up 재실행(M6).
+   - **정정:** 인증서 CN의 `P7H3D7D535`는 사용자 ID이고 실제 TeamIdentifier는 `4T2Y2T7SHU`.
 2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
 4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증한다. 폴더 포함 복사는 D-31(항목 전체 무시 + 알림).
