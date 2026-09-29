@@ -1,0 +1,9 @@
+=== CAPTURE label=manual seq=531 openAttempts=1 updatesInBurst=1 ===
+formats (4):
+     13 0x000D CF_UNICODETEXT                                   3902 B 
+     16 0x0010 CF_LOCALE                                           4 B 
+      1 0x0001 CF_TEXT                                          1951 B 
+      7 0x0007 CF_OEMTEXT                                       1951 B 
+MARKER absent (foreign copy)
+CLASSIFY (spec 4.5): text; also present: text
+TEXT: 1950 chars, CRLF=True first80='19:05:50.040 === SELF-TEST ===\r\n19:05:50.041 wrote text+HTML (paste into Notepad'

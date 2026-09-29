@@ -1,0 +1,25 @@
+19:05:50.040 === SELF-TEST ===
+19:05:50.041 wrote text+HTML (paste into Notepad, Word/WordPad, Edge contenteditable)
+19:05:50.044 PASS rich: marker reads back 
+19:05:50.045 PASS rich: CF_UNICODETEXT roundtrip 
+19:05:50.047 PASS rich: HTML Format registered and present id=49317
+19:05:50.048 PASS rich: CF_HTML offsets valid (UTF-8 byte offsets) 
+19:05:50.049 PASS rich: CF_HTML fragment roundtrip 
+19:05:50.050 PASS rich: CanUploadToCloudClipboard=0 readable 
+19:05:50.054 wrote PNG + CF_DIBV5 (paste into Paint, Word/WordPad; alpha should survive where supported)
+19:05:50.058 PASS image: registered 'PNG' present id=49406
+19:05:50.059 PASS image: CF_DIBV5 (id 17) present 
+19:05:50.060 INFO image: synthesized CF_DIB present=True, CF_BITMAP present=True
+19:05:50.062 PASS image: PNG pixel roundtrip (incl. alpha) 
+19:05:50.065 PASS image: DIBV5 -> pixels identical (alpha preserved) hdr=124 96x64 32bpp comp=3 bottom-up masks=00FF0000/0000FF00/000000FF/FF000000 alpha[0..255] partialAlphaPx=6016 colorGtAlphaPx=4454
+19:05:50.068 INFO image: synthesized CF_DIB decode: hdr=40 96x64 32bpp comp=3 bottom-up masks=00FF0000/0000FF00/000000FF/00000000 alpha[255..255] partialAlphaPx=0 colorGtAlphaPx=0 (pixel diff vs original: 6080)
+19:05:50.080 wrote HDROP (4 entries incl. one folder) from C:\Users\TobyLee\AppData\Local\ClipboardSync\spike-s3\20260929-190550 (paste into Explorer)
+19:05:50.084 PASS files: HDROP parsed wide 
+19:05:50.086 PASS files: 4 entries exist (3 files + 1 folder) 
+19:05:50.089 PASS files: Korean + emoji names survive 
+19:05:50.091 PASS files: Preferred DropEffect=1 
+19:05:50.093 === SELF-TEST DONE (now paste manually into the target apps and note results) ===
+19:05:50.096 UPDATE seq=526 owner=S3(9444) +6378ms [own write]
+19:05:50.100 UPDATE seq=526 owner=S3(9444) +4ms [own write]
+19:05:50.104 UPDATE seq=526 owner=S3(9444) +3ms [own write]
+19:05:50.272 -- burst of 3 update(s) settled (own=3) --
