@@ -11,8 +11,8 @@
 | 무엇을 | Mac ↔ Windows 양방향 클립보드 자동 동기화 (텍스트/HTML 기본, 이미지·파일은 옵션) |
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
-| 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M6 Windows 확인** → M7 마감 |
+| 저장소 내용 | `docs/00~04`, `docs/spikes.md`, `README.md`, `protocol/`(명세·벡터·TS 참조/CLI), `server/`, `mac/`, `windows/` |
+| 다음 작업 | **개발 일시 중단(2026-09-30).** 남은 일은 [04-remaining.md](04-remaining.md) — M6 Windows 확인 → M7 마감 |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
@@ -103,7 +103,7 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
    - Mac 앱: Finder 파일 URL → 폴더/패키지면 알림·무시, 읽기 전 크기 합계 검사, NFC 이름으로 전송. 수신은 `~/Library/Caches/com.tobylee.clipsync/incoming/<id>/`에 다 쓴 뒤 파일 URL 항목들(첫 항목 마커). **실측:** files off면 송수신 무시·파일명 텍스트 누출 없음, on 전환 즉시 반영, NFD 이름 수신→NFC로 캐시, `../../CON.txt`→`.._.._CON.txt`, Mac 2개 파일 송신(NFD 원본→NFC 이름), 폴더 차단, max=5에서 6 MiB 차단.
    - Windows 앱: `CF_HDROP` 읽기(연 상태에서 마커 재확인) → 폴더면 알림·무시, 크기 검사, `FileShare.ReadWrite`로 읽기. 수신은 `%LOCALAPPDATA%\ClipboardSync\incoming\<id>\`에 쓴 뒤 `CF_HDROP` + `Preferred DropEffect`=1. selftest에 HDROP 왕복(한글·이모지)과 적대적 이름 확인 추가. Mac에서 컴파일만 확인.
    - 캐시 정리(24h/200 MiB)와 수신 후 삭제(DELETE body)는 M6.
-1e. **M6 수신 후 삭제 + 오프라인/재연결: Mac 쪽 완료, Windows 확인 대기(미커밋).** D-58~D-62.
+1e. **M6 수신 후 삭제 + 오프라인/재연결: 구현·Mac 실측 완료(커밋 `cf8f62b`), Windows 실측 미완** — [04-remaining.md](04-remaining.md) §1. D-58~D-62.
    - **테스트 격리:** 자동 서버 교차 테스트는 이제 **로컬 `wrangler dev`**를 쓴다(`cd server && npx wrangler dev --port 8787` 후 `CLIPSYNC_URL=http://localhost:8787 CLIPSYNC_PASSPHRASE="abacus abdomen abide abnormal abrasion abroad absence"`). `clipsync-dev`는 실제 앱끼리의 확인에만 쓴다(M6부터 앱이 적용 후 본문을 지워 테스트와 충돌).
    - Core(Swift/C#): `planCatchUp(holdLocal:)`, `planCacheCleanup`/`CacheCleanup.Plan`(24h→200 MiB, 현재 클립보드 id 보호, 32자 hex만), 전송 실패 판별(`isTransportFailure`). 테스트 Swift 39+교차, C# 61.
    - 두 앱: 적용 성공 후 image/files면 DELETE(404/410=완료), 받은 이미지는 `bundle.csb1`로 캐시, 최근 항목에서 서버 본문이 없으면 캐시에서 복원("캐시에서 복원" 표시), 시작 시·매시간 캐시 정리, 로컬 우선(변경 카운터 `ownChangeCount`/`ownClipboardSeq` 저장), pending(전송 실패 최신 1개, 재연결 시 먼저 업로드, 그 catch-up은 적용 안 함), 적용 워터마크로 일시정지·받기 off 해제 후 재개 catch-up, 연결 시 서버 항목 20개로 최근 항목 채움(재시작 후에도 목록 유지). Windows 송신 큐는 Channel → 직렬 작업 체인. Mac Info.plist에 `NSAllowsLocalNetworking`(로컬 서버 접속).

@@ -6,7 +6,7 @@ Mac과 Windows 사이에서 **복사한 내용을 자동으로 주고받는** �
 - **macOS** 메뉴바 앱 (Swift) · **Windows** 트레이 앱 (.NET 10) · **서버** Cloudflare Workers + Durable Object + R2
 - 서버는 본인 Cloudflare 계정에 배포합니다 (Workers Free 플랜으로 동작).
 
-> 상태: 개발 중 — M0~M5 완료, M6(수신 후 삭제·오프라인) 진행 중, M7(마감) 예정. 자세한 진행 상황은 [핸드오프 문서](docs/03-handoff.md)를 봅니다.
+> 상태: 개발 일시 중단 — M0~M5 완료, M6(수신 후 삭제·오프라인)은 구현·Mac 확인까지 완료, M7(마감) 미착수. 남은 일은 [남은 작업](docs/04-remaining.md)에 정리되어 있습니다.
 
 ## 주요 기능
 
@@ -161,8 +161,9 @@ node src/cli.ts config-set images=on files=on max=20
 2. [기술 명세](docs/01-tech-spec.md) — 아키텍처, 암호, API, 동작 규칙, 결정 로그
 3. [구현 계획](docs/02-implementation-plan.md) — 마일스톤과 완료 기준
 4. [핸드오프](docs/03-handoff.md) — 현재 상태와 다음 할 일
-5. [스파이크 결과](docs/spikes.md) — 착수 전 검증
-6. [프로토콜](protocol/PROTOCOL.md) — 바이트 포맷과 테스트 벡터 규칙
+5. [남은 작업](docs/04-remaining.md) — 멈춘 지점, 마무리할 일, 미뤄 둔 검증, 알려진 한계
+6. [스파이크 결과](docs/spikes.md) — 착수 전 검증
+7. [프로토콜](protocol/PROTOCOL.md) — 바이트 포맷과 테스트 벡터 규칙
 
 ## 알려진 한계
 
