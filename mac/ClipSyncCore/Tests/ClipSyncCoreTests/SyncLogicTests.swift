@@ -93,4 +93,40 @@ import Testing
         #expect(plainText(fromHTML: "<p>한글 <b>bold</b></p>")?.contains("한글 bold") == true)
         #expect(plainText(fromHTML: "") == nil)
     }
+
+    @Test func catchUpHoldsWhenLocalIsNewerOrPending() {
+        let plan = planCatchUp(items: [c(5), c(6)], lastSeq: 4, selfDevice: "me", canApply: true, allowedKinds: ["text"], holdLocal: true)
+        #expect(plan == CatchUpPlan(newLastSeq: 6, target: nil))   // 목록 워터마크는 진행, 적용은 안 함
+    }
+
+    private let id1 = String(repeating: "a", count: 32), id2 = String(repeating: "b", count: 32), id3 = String(repeating: "c", count: 32)
+
+    @Test func cacheCleanupAgeThenSize() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let entries = [
+            CacheEntry(id: id1, modified: now.addingTimeInterval(-25 * 3600), bytes: 10),     // 24h 초과
+            CacheEntry(id: id2, modified: now.addingTimeInterval(-3600), bytes: 150 << 20),
+            CacheEntry(id: id3, modified: now.addingTimeInterval(-60), bytes: 100 << 20),
+        ]
+        #expect(planCacheCleanup(entries, now: now, protectedId: nil) == [id1, id2])       // 오래된 것 + 200MiB 초과분
+        #expect(planCacheCleanup(entries, now: now, protectedId: id2) == [id1, id3])       // 보호된 것은 건너뛰고 다음 것
+        #expect(planCacheCleanup(entries, now: now, protectedId: id1) == [id2])            // 현재 클립보드 항목은 오래돼도 보존
+    }
+
+    @Test func cacheCleanupIgnoresForeignNames() {
+        let now = Date()
+        let old = now.addingTimeInterval(-48 * 3600)
+        let entries = [CacheEntry(id: "..", modified: old, bytes: 1), CacheEntry(id: "ABCDEF" + String(repeating: "0", count: 26), modified: old, bytes: 1),
+                       CacheEntry(id: String(repeating: "0", count: 31), modified: old, bytes: 1), CacheEntry(id: id1, modified: old, bytes: 1)]
+        #expect(planCacheCleanup(entries, now: now, protectedId: nil) == [id1])
+        #expect(isCacheId(id1) && !isCacheId("../x") && !isCacheId(id1.uppercased()))
+    }
+
+    @Test func transportFailureClassification() {
+        #expect(isTransportFailure(URLError(.notConnectedToInternet)))
+        #expect(isTransportFailure(URLError(.timedOut)))
+        #expect(isTransportFailure(ServerError.http(status: 503, op: "PUT body")))
+        #expect(!isTransportFailure(ServerError.http(status: 413, op: "PUT body")))
+        #expect(!isTransportFailure(ServerError.http(status: 409, op: "PUT body")))
+    }
 }

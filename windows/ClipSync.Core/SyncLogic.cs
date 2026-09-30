@@ -43,15 +43,42 @@ public static partial class SyncLogic
     [GeneratedRegex(@"<[^>]*>", RegexOptions.Singleline)] private static partial Regex AnyTag();
 
     /// 최근 항목 20개 등에서 쓰는 catch-up 계획 (spec 6.3, D-42).
-    public static CatchUpPlan PlanCatchUp(IEnumerable<CatchUpCandidate> items, long lastSeq, string selfDevice, bool canApply, IReadOnlySet<string> allowedKinds)
+    /// holdLocal: 로컬 우선 규칙(D-58)이나 pending(D-59) 때문에 이번 catch-up에서는 원격 항목을 적용하지 않는다 (목록만 갱신).
+    public static CatchUpPlan PlanCatchUp(IEnumerable<CatchUpCandidate> items, long lastSeq, string selfDevice, bool canApply, IReadOnlySet<string> allowedKinds, bool holdLocal = false)
     {
         var fresh = items.Where(i => i.Seq > lastSeq).ToList();
         var newLast = fresh.Count > 0 ? fresh.Max(i => i.Seq) : lastSeq;
-        if (!canApply) return new CatchUpPlan(newLast, null);
+        if (!canApply || holdLocal) return new CatchUpPlan(newLast, null);
         var target = fresh
             .Where(i => i.DeviceId != selfDevice && !i.Purged && i.Kinds.Count > 0 && i.Kinds.All(allowedKinds.Contains))
             .MaxBy(i => i.Seq);
         return new CatchUpPlan(newLast, target);
+    }
+}
+
+public sealed record CacheEntry(string Id, DateTimeOffset Modified, long Bytes);
+
+/// 캐시 정리 (D-62).
+public static class CacheCleanup
+{
+    /// 캐시 폴더 이름으로 쓸 수 있는 item id (소문자 hex 32자). 정리는 이 이름의 폴더만 건드린다.
+    public static bool IsCacheId(string name) => name.Length == 32 && name.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    /// 지울 id 목록: 24h 넘은 것, 그다음 오래된 순으로 총량이 한도 이하가 될 때까지. protectedId(현재 클립보드 항목)는 지우지 않는다.
+    public static List<string> Plan(IEnumerable<CacheEntry> entries, DateTimeOffset now, string? protectedId, TimeSpan? maxAge = null, long maxBytes = 200L << 20)
+    {
+        var age = maxAge ?? TimeSpan.FromHours(24);
+        var candidates = entries.Where(e => IsCacheId(e.Id)).ToList();
+        var delete = candidates.Where(e => e.Id != protectedId && now - e.Modified > age).Select(e => e.Id).ToHashSet();
+        var remaining = candidates.Where(e => !delete.Contains(e.Id)).OrderBy(e => e.Modified).ToList();
+        var total = remaining.Sum(e => e.Bytes);
+        while (total > maxBytes && remaining.FindIndex(e => e.Id != protectedId) is var i and >= 0)
+        {
+            total -= remaining[i].Bytes;
+            delete.Add(remaining[i].Id);
+            remaining.RemoveAt(i);
+        }
+        return candidates.Select(e => e.Id).Where(delete.Contains).ToList();
     }
 }
 

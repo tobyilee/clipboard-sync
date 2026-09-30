@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(label("\(dot) · \(v.url.host ?? "")"))
         if let b = engine.busy { menu.addItem(label("⇅ \(b)")) }
+        if engine.hasPending { menu.addItem(label("⏳ 보내지 못한 복사 1개 보관 중 (다시 연결되면 전송)")) }
         if let m = engine.lastMessage { menu.addItem(label("⚠︎ \(m)")) }
         if PasteboardIO.accessNeedsAttention {
             menu.addItem(action("권한 필요: 시스템 설정에서 클립보드 접근 허용…", #selector(openPrivacySettings)))
@@ -115,10 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if engine.recent.isEmpty { rsub.addItem(label("없음")) }
         for r in engine.recent {
             let title = recentTitle(r)
-            let mi = NSMenuItem(title: title, action: r.purged ? nil : #selector(restoreItem(_:)), keyEquivalent: "")
+            // 서버에서 삭제된 항목은 캐시가 있을 때만 복원할 수 있다 (D-62)
+            let restorable = !r.purged || engine.hasCache(r.id)
+            let mi = NSMenuItem(title: title, action: restorable ? #selector(restoreItem(_:)) : nil, keyEquivalent: "")
             mi.target = self
             mi.representedObject = r.id
-            mi.isEnabled = !r.purged
+            mi.isEnabled = restorable
             rsub.addItem(mi)
         }
         recent.submenu = rsub
@@ -136,7 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let kind = r.kinds.contains("files") ? "파일" : r.kinds.contains("image") ? "이미지" : r.kinds.contains("html") ? "HTML" : "텍스트"
         let text = r.preview.replacingOccurrences(of: "\n", with: " ")
         let short = text.count > 40 ? String(text.prefix(40)) + "…" : text
-        return "\(time) · \(kind) · \(src)\(r.purged ? " · 서버에서 삭제됨" : "") \(short)"
+        let state = !r.purged ? "" : engine.hasCache(r.id) ? " · 캐시에서 복원" : " · 서버에서 삭제됨"
+        return "\(time) · \(kind) · \(src)\(state) \(short)"
     }
 
     private func pauseRemaining() -> String {

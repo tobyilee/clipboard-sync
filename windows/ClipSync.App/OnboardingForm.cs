@@ -66,6 +66,8 @@ sealed class OnboardingForm : Form
             settings.LastAppliedSeq = null;
             settings.ConfigVersion = 0;   // 다른 vault일 수 있으므로 config 캐시도 비운다
             settings.VaultConfig = VaultConfig.FailClosed;
+            settings.OwnClipboardSeq = null;
+            settings.ApplyWatermark = null;
             settings.Save();
             Log.Info($"onboarding saved server={uri.Host} vault={keys.VaultId[..8]}");
             Saved = true;

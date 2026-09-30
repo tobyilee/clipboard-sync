@@ -89,13 +89,50 @@ public struct CatchUpPlan: Equatable, Sendable {
 }
 
 /// `seq <= lastSeq`와 자기 기기 항목은 건너뛴다. 종류가 허용되고 purged가 아닌 항목 중 seq가 가장 높은 하나만 적용 대상이다.
+/// `holdLocal`: 로컬 우선 규칙(D-58)이나 pending(D-59) 때문에 이번 catch-up에서는 원격 항목을 적용하지 않는다 (목록만 갱신).
 public func planCatchUp(items: [CatchUpCandidate], lastSeq: Int, selfDevice: String,
-                        canApply: Bool, allowedKinds: Set<String>) -> CatchUpPlan {
+                        canApply: Bool, allowedKinds: Set<String>, holdLocal: Bool = false) -> CatchUpPlan {
     let fresh = items.filter { $0.seq > lastSeq }
     let newLast = fresh.map(\.seq).max() ?? lastSeq
-    guard canApply else { return CatchUpPlan(newLastSeq: newLast, target: nil) }
+    guard canApply, !holdLocal else { return CatchUpPlan(newLastSeq: newLast, target: nil) }
     let target = fresh
         .filter { $0.deviceId != selfDevice && !$0.purged && !$0.kinds.isEmpty && Set($0.kinds).isSubset(of: allowedKinds) }
         .max { $0.seq < $1.seq }
     return CatchUpPlan(newLastSeq: newLast, target: target)
+}
+
+// MARK: - 캐시 정리 (D-62)
+
+public struct CacheEntry: Equatable, Sendable {
+    public var id: String
+    public var modified: Date
+    public var bytes: Int
+    public init(id: String, modified: Date, bytes: Int) { self.id = id; self.modified = modified; self.bytes = bytes }
+}
+
+/// 캐시 폴더 이름으로 쓸 수 있는 item id (소문자 hex 32자). 정리는 이 이름의 폴더만 건드린다.
+public func isCacheId(_ name: String) -> Bool {
+    name.utf8.count == 32 && name.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+}
+
+/// 지울 id 목록: 24h 넘은 것, 그다음 오래된 순으로 총량이 한도 이하가 될 때까지. `protectedId`(현재 클립보드 항목)는 지우지 않는다.
+public func planCacheCleanup(_ entries: [CacheEntry], now: Date, maxAge: TimeInterval = 24 * 3600,
+                             maxBytes: Int = 200 << 20, protectedId: String?) -> [String] {
+    let candidates = entries.filter { isCacheId($0.id) }
+    var delete = Set(candidates.filter { $0.id != protectedId && now.timeIntervalSince($0.modified) > maxAge }.map(\.id))
+    var remaining = candidates.filter { !delete.contains($0.id) }.sorted { $0.modified < $1.modified }
+    var total = remaining.reduce(0) { $0 + $1.bytes }
+    while total > maxBytes, let i = remaining.firstIndex(where: { $0.id != protectedId }) {
+        total -= remaining[i].bytes
+        delete.insert(remaining[i].id)
+        remaining.remove(at: i)
+    }
+    return candidates.map(\.id).filter { delete.contains($0) }
+}
+
+/// D-59: pending으로 보관할 실패인가 (전송 계층: 연결·타임아웃·5xx). 409/411/413 등 요청 자체의 문제는 아니다.
+public func isTransportFailure(_ error: Error) -> Bool {
+    if error is URLError { return true }
+    if case ServerError.http(let status, _) = error { return status >= 500 || status == 0 }
+    return false
 }

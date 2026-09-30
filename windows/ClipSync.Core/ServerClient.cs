@@ -79,6 +79,15 @@ public sealed class ServerClient : IDisposable
 
     public void Dispose() => http.Dispose();
 
+    /// D-59: pending으로 보관할 실패인가 (전송 계층: 연결·타임아웃·5xx). 409/411/413 등 요청 자체의 문제는 아니다.
+    public static bool IsTransportFailure(Exception e, CancellationToken ct = default) => e switch
+    {
+        HttpRequestException or IOException or System.Net.Sockets.SocketException or WebSocketException => true,
+        TaskCanceledException when !ct.IsCancellationRequested => true,   // HttpClient 타임아웃
+        ServerException se => se.Status >= 500 || se.Status == 0,
+        _ => false,
+    };
+
     /// UUID v4 16바이트를 소문자 hex로. Guid.ToByteArray()는 혼합 엔디언이라 쓰지 않는다 (D-33).
     public static string NewDeviceId()
     {

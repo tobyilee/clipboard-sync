@@ -84,6 +84,44 @@ public class SyncLogicTests
         Assert.Equal(7, SyncLogic.PlanCatchUp([], 7, "me", true, new HashSet<string> { "text" }).NewLastSeq);
     }
 
+    [Fact]
+    public void CatchUpHoldsWhenLocalIsNewerOrPending() =>
+        Assert.Equal(new CatchUpPlan(6, null), SyncLogic.PlanCatchUp([C(5), C(6)], 4, "me", true, new HashSet<string> { "text" }, holdLocal: true));
+
+    static readonly string Id1 = new('a', 32), Id2 = new('b', 32), Id3 = new('c', 32);
+
+    [Fact]
+    public void CacheCleanupAgeThenSize()
+    {
+        var now = DateTimeOffset.FromUnixTimeSeconds(100_000);
+        CacheEntry[] entries = [new(Id1, now.AddHours(-25), 10), new(Id2, now.AddHours(-1), 150L << 20), new(Id3, now.AddMinutes(-1), 100L << 20)];
+        Assert.Equal([Id1, Id2], CacheCleanup.Plan(entries, now, null));
+        Assert.Equal([Id1, Id3], CacheCleanup.Plan(entries, now, Id2));
+        Assert.Equal([Id2], CacheCleanup.Plan(entries, now, Id1));
+    }
+
+    [Fact]
+    public void CacheCleanupIgnoresForeignNames()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var old = now.AddHours(-48);
+        CacheEntry[] entries = [new("..", old, 1), new("ABCDEF" + new string('0', 26), old, 1), new(new string('0', 31), old, 1), new(Id1, old, 1)];
+        Assert.Equal([Id1], CacheCleanup.Plan(entries, now, null));
+        Assert.False(CacheCleanup.IsCacheId("../x"));
+    }
+
+    [Fact]
+    public void TransportFailureClassification()
+    {
+        Assert.True(ServerClient.IsTransportFailure(new HttpRequestException("refused")));
+        Assert.True(ServerClient.IsTransportFailure(new TaskCanceledException("timeout")));
+        Assert.True(ServerClient.IsTransportFailure(new ServerException(503, "PUT body")));
+        Assert.False(ServerClient.IsTransportFailure(new ServerException(413, "PUT body")));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.False(ServerClient.IsTransportFailure(new TaskCanceledException("user"), cts.Token));
+    }
+
     [Theory]
     [InlineData(" https://clipsync-dev.clipboardsync.workers.dev/ ", "https://clipsync-dev.clipboardsync.workers.dev/")]
     [InlineData("http://localhost:8787", "http://localhost:8787/")]

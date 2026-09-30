@@ -22,6 +22,11 @@ sealed class Settings
     [JsonPropertyName("configVersion")] public long ConfigVersion { get; set; }
     [JsonPropertyName("vaultConfig")] public VaultConfig VaultConfig { get; set; } = VaultConfig.FailClosed;
 
+    /// D-58: 우리가 마지막으로 쓰거나 보낸 시점의 클립보드 시퀀스 번호. 지금 값과 다르면 사용자가 그 뒤에 복사한 것.
+    [JsonPropertyName("ownClipboardSeq")] public uint? OwnClipboardSeq { get; set; }
+    /// D-60: 적용이 꺼진 시점의 lastSeq. 적용이 다시 켜지면 여기서부터 catch-up.
+    [JsonPropertyName("applyWatermark")] public long? ApplyWatermark { get; set; }
+
     [JsonIgnore] public Uri? ServerUri => ServerUrl is null ? null : ServerUrlInput.Parse(ServerUrl);
 
     [JsonIgnore]

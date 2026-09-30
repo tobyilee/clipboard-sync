@@ -106,6 +106,7 @@ sealed class TrayContext : ApplicationContext
         };
         menu.Items.Add(Label($"{dot} · {settings.ServerUri?.Host}"));
         if (engine.Busy is { } b) menu.Items.Add(Label("⇅ " + b));
+        if (engine.HasPending) menu.Items.Add(Label("⏳ 보내지 못한 복사 1개 보관 중 (다시 연결되면 전송)"));
         if (engine.LastMessage is { } m) menu.Items.Add(Label("⚠ " + m));
 
         menu.Items.Add(Toggle("동기화", settings.SyncEnabled, () =>
@@ -131,7 +132,8 @@ sealed class TrayContext : ApplicationContext
         if (engine.Recent.Count == 0) recent.DropDownItems.Add(Label("없음"));
         foreach (var r in engine.Recent)
         {
-            var item = new ToolStripMenuItem(RecentTitle(r)) { Enabled = !r.Purged };
+            // 서버에서 삭제된 항목은 캐시가 있을 때만 복원할 수 있다 (D-62)
+            var item = new ToolStripMenuItem(RecentTitle(r)) { Enabled = !r.Purged || engine.HasCache(r.Id) };
             var captured = r;
             item.Click += (_, _) => engine.Restore(captured);
             recent.DropDownItems.Add(item);
@@ -153,7 +155,8 @@ sealed class TrayContext : ApplicationContext
         var text = r.Preview.Replace("\r", " ").Replace("\n", " ");
         if (text.Length > 40) text = text[..40] + "…";
         // & 는 메뉴에서 단축키 표시로 해석되므로 이스케이프
-        return $"{time} · {kind} · {src}{(r.Purged ? " · 서버에서 삭제됨" : "")} {text}".Replace("&", "&&");
+        var state = !r.Purged ? "" : engine.HasCache(r.Id) ? " · 캐시에서 복원" : " · 서버에서 삭제됨";
+        return $"{time} · {kind} · {src}{state} {text}".Replace("&", "&&");
     }
 
     string PauseRemaining() =>

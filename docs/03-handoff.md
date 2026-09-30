@@ -12,11 +12,11 @@
 | 구성 | macOS 메뉴바 앱(Swift) + Windows 트레이 앱(.NET 10) + Cloudflare 서버(Workers + Durable Object + R2), E2EE |
 | 저장소 | https://github.com/tobyilee/clipboard-sync (private), 브랜치 `main` |
 | 저장소 내용 | `docs/00~03`, `docs/spikes.md`, `README.md`, `protocol/ref/ server/ mac/ windows/`(현재 `.gitkeep`만), `.gitignore` |
-| 다음 작업 | **M5b 파일 동기화** |
+| 다음 작업 | **M6 Windows 확인** → M7 마감 |
 
 ## 2. 문서 읽는 순서
 1. `00-requirements.md` — 무엇을 만들지 (FR/NFR 번호)
-2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-55**)
+2. `01-tech-spec.md` — 어떻게 만들지 (아키텍처, 암호, API, 클라이언트 동작, **결정 로그 D-1~D-62**)
 3. `02-implementation-plan.md` — 어떤 순서로 (M0~M7, 완료 기준, 스파이크, 위험)
 4. `spikes.md` — 스파이크별 결과 (가정 / 결과 / 설계 변경)
 5. 이 문서 — 지금 어디까지 왔고, 무엇이 확정/미확정인지
@@ -98,11 +98,18 @@ RDP 클립보드 리디렉션 끄기: Windows App의 Cloud PC 설정에서 Clipb
    - Windows 앱: 설정 수신·메뉴 읽기 전용 표시, 이미지 송신(PNG > DIBV5 > DIB, 클립보드 닫은 뒤 변환), 적용(PNG + DIBV5, GDI+ 디코드), 적용을 별도 작업으로(대용량 다운로드가 이벤트 처리를 막지 않음), `--selftest`에 이미지 왕복 4항목 추가. Mac에서 컴파일만 확인.
    - **Cloud PC 1차(2026-09-30):** Win+Shift+S 캡처(395×319) → Mac에 PNG·TIFF로 적용 확인. Mac→Windows 무지개 이미지(seq 101) 전송까지 확인(그림판 붙여넣기·selftest 결과는 사용자 확인 대기). **버그 수정:** Windows가 selftest가 쓴 테스트 PNG를 새 복사로 올림(seq 100, 바이트 동일) — 클립보드를 열지 않고 `IsClipboardFormatAvailable`로 판별해 다른 프로세스가 쓰는 도중(PNG는 있고 마커는 아직)을 봄. 판별·마커 확인을 `OpenClipboard` 안에서 하도록 수정.
    - **서명 사고(2026-09-30):** Apple Development 인증서가 폐기되어 Mac 앱이 "Malware Blocked and Moved to Bin"으로 휴지통 이동 → 자체 서명으로 전환(D-55). 진단: `/usr/bin/log show`(zsh에서 `log`는 다른 명령에 가려짐)에서 amfid `Trust evaluate failure: [leaf Revocation4]`.
-1d. **M5b 파일: Mac 쪽 완료, Windows Cloud PC 검증 대기(미커밋).** D-56(파일 규칙), D-57(수신 파일명 정리 — TS가 `file_names`/`file_name_sets` 벡터 생성, Swift·C# 동일 통과).
+1d. **M5b 파일: 완료(2026-09-30).** Cloud PC: selftest ALL PASS, Explorer 파일 복사 → Mac 캐시·클립보드 적용(seq 123), Mac이 보낸 `맥에서 온 파일 🎉.txt` → Explorer 붙여넣기 확인(사용자). **M5 완료.** 사용자가 직접 누르지 않은 것: Mac 메뉴의 설정 토글(경로는 Core `writeConfig` 테스트와 CLI `config-set`으로 확인). D-56(파일 규칙), D-57(수신 파일명 정리 — TS가 `file_names`/`file_name_sets` 벡터 생성, Swift·C# 동일 통과).
    - Core: `sanitizeFileName`/`uniqueFileNames`(TS/Swift/C#), `filesHash`(D-54), C# `HDrop.Parse/Build`. ServerClient `prepare`에 `files` header. CLI `send-file [--nfd] [--as NAME] PATH...`. 테스트: TS 11, Swift 46, C# 57.
    - Mac 앱: Finder 파일 URL → 폴더/패키지면 알림·무시, 읽기 전 크기 합계 검사, NFC 이름으로 전송. 수신은 `~/Library/Caches/com.tobylee.clipsync/incoming/<id>/`에 다 쓴 뒤 파일 URL 항목들(첫 항목 마커). **실측:** files off면 송수신 무시·파일명 텍스트 누출 없음, on 전환 즉시 반영, NFD 이름 수신→NFC로 캐시, `../../CON.txt`→`.._.._CON.txt`, Mac 2개 파일 송신(NFD 원본→NFC 이름), 폴더 차단, max=5에서 6 MiB 차단.
    - Windows 앱: `CF_HDROP` 읽기(연 상태에서 마커 재확인) → 폴더면 알림·무시, 크기 검사, `FileShare.ReadWrite`로 읽기. 수신은 `%LOCALAPPDATA%\ClipboardSync\incoming\<id>\`에 쓴 뒤 `CF_HDROP` + `Preferred DropEffect`=1. selftest에 HDROP 왕복(한글·이모지)과 적대적 이름 확인 추가. Mac에서 컴파일만 확인.
    - 캐시 정리(24h/200 MiB)와 수신 후 삭제(DELETE body)는 M6.
+1e. **M6 수신 후 삭제 + 오프라인/재연결: Mac 쪽 완료, Windows 확인 대기(미커밋).** D-58~D-62.
+   - **테스트 격리:** 자동 서버 교차 테스트는 이제 **로컬 `wrangler dev`**를 쓴다(`cd server && npx wrangler dev --port 8787` 후 `CLIPSYNC_URL=http://localhost:8787 CLIPSYNC_PASSPHRASE="abacus abdomen abide abnormal abrasion abroad absence"`). `clipsync-dev`는 실제 앱끼리의 확인에만 쓴다(M6부터 앱이 적용 후 본문을 지워 테스트와 충돌).
+   - Core(Swift/C#): `planCatchUp(holdLocal:)`, `planCacheCleanup`/`CacheCleanup.Plan`(24h→200 MiB, 현재 클립보드 id 보호, 32자 hex만), 전송 실패 판별(`isTransportFailure`). 테스트 Swift 39+교차, C# 61.
+   - 두 앱: 적용 성공 후 image/files면 DELETE(404/410=완료), 받은 이미지는 `bundle.csb1`로 캐시, 최근 항목에서 서버 본문이 없으면 캐시에서 복원("캐시에서 복원" 표시), 시작 시·매시간 캐시 정리, 로컬 우선(변경 카운터 `ownChangeCount`/`ownClipboardSeq` 저장), pending(전송 실패 최신 1개, 재연결 시 먼저 업로드, 그 catch-up은 적용 안 함), 적용 워터마크로 일시정지·받기 off 해제 후 재개 catch-up, 연결 시 서버 항목 20개로 최근 항목 채움(재시작 후에도 목록 유지). Windows 송신 큐는 Channel → 직렬 작업 체인. Mac Info.plist에 `NSAllowsLocalNetworking`(로컬 서버 접속).
+   - **Mac 실측(로컬 서버):** 6 MB 이미지(R2)·파일 적용 후 본문 삭제(purged)·캐시 저장, 텍스트는 유지 / 서버 중지 중 복사 A→B → 재연결 시 B만 업로드, 그사이 원격 X는 적용 안 함 / 일시정지 중 원격 도착 + 로컬 복사 → 해제 후 덮어쓰지 않음, 로컬 복사 없으면 해제 후 적용 / 캐시 정리: 2일 지난 hex 폴더만 삭제, 이상한 이름·심볼릭 링크(대상 포함) 보존.
+   - Mac 앱을 로컬 서버로 돌렸다 되돌리는 법: 앱 종료 → `defaults write com.tobylee.clipsync serverURL <URL>` → `lastSeq lastAppliedSeq configVersion vaultConfig ownChangeCount applyWatermark pausedUntil` 삭제 → 실행(같은 빌드면 Keychain 창 없음).
+   - 알림 권한이 "허용 안 됨"으로 기록됨 → 시스템 설정 → 알림 → ClipSync에서 켜야 알림이 보인다.
 2. S-5의 on 상태(에코 루프)·방향별 확인은 미완이므로 **M4(Windows 텍스트 클라이언트) 전에** 재확인 (한쪽 방향 리디렉션이 켜져 있으면 M4 텍스트 테스트가 오통과한다).
 3. 스파이크 브랜치 `spike/s3`, `spike/s4`는 원격에 남아 있다(버리는 코드; `spike/s3`의 `out/`은 M3/M4 fixture 후보). 필요 없어지면 삭제.
 4. M3/M4에서 실제 소스(Edge, Explorer 복사/잘라내기/폴더, Snipping Tool, Office) 덤프로 CF_HTML 파서·DIB→PNG·HDROP 처리를 재검증한다. 폴더 포함 복사는 D-31(항목 전체 무시 + 알림).

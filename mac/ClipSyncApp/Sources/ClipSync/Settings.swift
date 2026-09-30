@@ -60,7 +60,18 @@ final class Settings {
         set { d.set(try? JSONEncoder().encode(newValue), forKey: "vaultConfig") }
     }
 
+    /// D-58: 우리가 마지막으로 쓰거나 보낸 시점의 pasteboard changeCount. 지금 값과 다르면 사용자가 그 뒤에 복사한 것.
+    var ownChangeCount: Int? {
+        get { d.object(forKey: "ownChangeCount") as? Int }
+        set { d.set(newValue, forKey: "ownChangeCount") }
+    }
+    /// D-60: 적용이 꺼진 시점의 lastSeq. 적용이 다시 켜지면 여기서부터 catch-up.
+    var applyWatermark: Int? {
+        get { d.object(forKey: "applyWatermark") as? Int }
+        set { d.set(newValue, forKey: "applyWatermark") }
+    }
+
     func resetVaultState() {
-        for k in ["serverURL", "lastSeq", "lastAppliedSeq", "pausedUntil", "configVersion", "vaultConfig"] { d.removeObject(forKey: k) }
+        for k in ["serverURL", "lastSeq", "lastAppliedSeq", "pausedUntil", "configVersion", "vaultConfig", "ownChangeCount", "applyWatermark"] { d.removeObject(forKey: k) }
     }
 }

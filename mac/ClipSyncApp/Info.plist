@@ -12,5 +12,8 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <!-- 개발용 로컬 서버(http://localhost, ws://localhost) 접속 허용. 원격은 https만 쓴다 (ServerURLInput). -->
+    <key>NSAppTransportSecurity</key>
+    <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
