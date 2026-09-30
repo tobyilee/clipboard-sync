@@ -109,7 +109,8 @@ public sealed class ServerClient : IDisposable
 
     // ---- 송신 ----
 
-    public PreparedItem Prepare(IEnumerable<BundleEntry> entries, IEnumerable<string> kinds, string? previewText = null, (int W, int H)? imageSize = null)
+    public PreparedItem Prepare(IEnumerable<BundleEntry> entries, IEnumerable<string> kinds, string? previewText = null, (int W, int H)? imageSize = null,
+        IReadOnlyList<(string Name, long Size)>? files = null)
     {
         var id = RandomNumberGenerator.GetBytes(16);
         var dev = Convert.FromHexString(DeviceId);
@@ -118,6 +119,7 @@ public sealed class ServerClient : IDisposable
         var header = new Dictionary<string, object> { ["v"] = 1, ["kinds"] = kinds.ToArray(), ["body_plain_size"] = body.Length };
         if (previewText is not null) header["preview"] = Protocol.PreviewOf(previewText);
         if (imageSize is { } sz) header["image"] = new Dictionary<string, int> { ["w"] = sz.W, ["h"] = sz.H };
+        if (files is not null) header["files"] = files.Select(f => new Dictionary<string, object> { ["name"] = f.Name, ["size"] = f.Size }).ToArray();
         var headerJson = JsonSerializer.SerializeToUtf8Bytes(header);
         return new PreparedItem(
             Protocol.UuidHex(id),

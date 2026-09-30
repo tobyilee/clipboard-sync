@@ -120,6 +120,15 @@ private func canonicalJSON(_ bytes: [UInt8]) throws -> NSObject {
         }
     }
 
+    @Test func fileNames() {
+        for f in list(v, "file_names") {
+            #expect(sanitizeFileName(f["input"] as! String) == f["expect"] as! String, "\(f["name"] as! String)")
+        }
+        for f in list(v, "file_name_sets") {
+            #expect(uniqueFileNames(f["inputs"] as! [String]) == f["expect"] as! [String], "\(f["name"] as! String)")
+        }
+    }
+
     @Test func previews() {
         for p in list(v, "previews") {
             #expect(previewOf(p["input"] as! String) == p["output"] as! String, "\(p["name"] as! String)")

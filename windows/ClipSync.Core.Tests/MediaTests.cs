@@ -167,3 +167,35 @@ public class MediaTests
         File.WriteAllBytes(Path.Combine(Path.GetTempPath(), "clipsync-csharp-ramp.png"), Imaging.EncodePng(Ramp()));
     }
 }
+
+public class FileTests
+{
+    [Fact]
+    public void HDropRoundTripKoreanAndEmoji()
+    {
+        string[] paths = [@"C:\Users\x\AppData\Local\ClipboardSync\incoming\ab\한글 파일.txt", @"D:\a\😀 b.png"];
+        var d = HDrop.Build(paths);
+        Assert.Equal(20, BitConverter.ToInt32(d, 0));
+        Assert.Equal(1, BitConverter.ToInt32(d, 16));
+        Assert.Equal(new byte[] { 0, 0, 0, 0 }, d[^4..]);   // 마지막 경로 NUL + 목록 끝 NUL (UTF-16)
+        Assert.Equal(paths, HDrop.Parse(d));
+    }
+
+    [Fact]
+    public void HDropParseRejectsGarbage()
+    {
+        Assert.Empty(HDrop.Parse(new byte[5]));
+        var d = HDrop.Build(["a"]);
+        BitConverter.GetBytes(9999).CopyTo(d, 0);
+        Assert.Empty(HDrop.Parse(d));
+    }
+
+    [Fact]
+    public void FilesHashIgnoresOrderAndNormalizesNames()
+    {
+        var a = FileNames.FilesHash([("한글.txt".Normalize(System.Text.NormalizationForm.FormD), [1, 2]), ("b", [3])]);
+        var b = FileNames.FilesHash([("b", [3]), ("한글.txt", [1, 2])]);
+        Assert.Equal(a, b);
+        Assert.NotEqual(a, FileNames.FilesHash([("b", [3]), ("한글.txt", [1, 3])]));
+    }
+}

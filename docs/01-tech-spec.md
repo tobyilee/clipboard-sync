@@ -136,7 +136,8 @@ CREATE TABLE config (
   - 이미지의 정규 포맷은 **PNG**. 소스 앱이 PNG를 주지 않으면 송신 측이 변환한다: macOS는 TIFF → PNG, Windows는 `CF_DIBV5`/`CF_DIB` → PNG (알파 보존).
   - **RTF → HTML 변환 (macOS 송신)**: TextEdit/Notes/Pages/Word 등은 HTML 없이 RTF만 pasteboard에 넣는 경우가 많다. HTML 표현이 없고 RTF가 있으면 `NSAttributedString`으로 읽어 HTML fragment로 변환해 전송한다 (plain text fallback은 그대로 포함). Windows 송신은 `HTML Format`이 있으면 사용하고 RTF는 v1에서 변환하지 않는다.
   - **유니코드 정규화**: 파일 이름과 header의 preview 문자열은 송신 시 **NFC로 정규화**한다. Finder는 한글 파일명을 자모 분리(NFD)로 넘기는 경우가 있어, 그대로 보내면 Windows에서 자모가 분리되어 보인다. 본문 텍스트 자체는 원문을 유지한다 (사용자가 복사한 텍스트를 바꾸지 않는다).
-  - 파일 이름은 수신 시 sanitize 한다 (경로 구분자 제거, Windows 예약 문자/이름 `CON`, `NUL` 등 치환, 길이 제한).
+  - 파일 이름은 수신 시 sanitize 한다 (경로 구분자 제거, Windows 예약 문자/이름 `CON`, `NUL` 등 치환, 길이 제한). **규칙 (D-57, 두 플랫폼 동일, Core 함수 하나):** ① NFC ② `/`·`\`와 Windows 예약 문자 `<>:"|?*`, 제어 문자(U+0000–001F, U+007F)를 `_`로 ③ 앞뒤 공백 제거, 끝의 `.`·공백 제거 ④ 비었거나 `.`/`..`이면 `file` ⑤ 확장자를 뺀 이름이 `CON PRN AUX NUL COM1–9 LPT1–9`(대소문자 무시)이면 앞에 `_` ⑥ 확장자를 보존하며 UTF-16 150자·UTF-8 240바이트 이하로 자름(문자 경계 유지; Windows 캐시 경로 260자, APFS 255바이트) ⑦ 한 항목 안에서 대소문자 무시 중복이면 `이름 (2).ext`처럼 번호.
+  - **파일 송수신 (D-56):** 송신은 Mac 파일 URL / Windows `CF_HDROP`. 경로 중 **디렉터리나 패키지(`.app`, `.rtfd` 등)가 하나라도 있으면 항목 전체를 무시하고 "폴더/패키지" 알림**(D-31). 크기는 **읽기 전에 파일 시스템 크기 합계**로 `max_media_bytes` 검사. 번들은 `type=4` 엔트리만(파일명 텍스트 없음), 이름은 파일명만(NFC). header는 `kinds:["files"]`, `files:[{name,size}]`, `preview`는 파일명 나열. Windows 잘라내기(`Preferred DropEffect`=이동)도 **복사로** 취급(원본을 지우지 않음). 수신은 캐시 `incoming/<item_id>/<정리된 이름>`에 **모두 쓴 뒤** 클립보드에 기록: Mac은 파일 URL마다 `NSPasteboardItem`(첫 항목에 마커), Windows는 `CF_HDROP`(DROPFILES, `fWide=1`, 이중 NUL) + `Preferred DropEffect`=복사(1) + 마커 + `CanUploadToCloudClipboard=0`. Windows는 원본을 `FileShare.ReadWrite`로 연다(Office 잠금). 캐시 정리(24h/200 MiB)는 M6.
 
 ### 4.4 vault 설정 (config)
 ```json
@@ -401,3 +402,5 @@ CREATE TABLE config (
 | D-53 | M5 진행률은 상태 표시만, 퍼센트는 M7 | 퍼센트 구현 | 범위 통제. 20MB 업로드는 수 초 |
 | D-54 | 미디어 해시: 이미지=디코드 픽셀, 파일=(NFC 이름, 크기, SHA-256). D-49는 텍스트만 | 인코딩 바이트 해시 | OS가 PNG/TIFF/DIB를 재인코딩해도 같은 이미지를 같게 봄 |
 | D-55 | Mac 서명을 자체 서명 `ClipSync Dev`로 전환 (지정 요구사항 `certificate leaf = H"0877…"`) | Apple Development 재발급 | 2026-09-30 Apple Development 인증서가 원격 폐기되어(amfid `leaf Revocation`, CSSMERR_TP_CERT_REVOKED) 실행 시 "Malware Blocked and Moved to Bin"으로 앱이 휴지통으로 이동됨. 자체 서명은 원격 폐기 대상이 아님(사용자 결정). **대가:** 팀 ID가 없어 Keychain 파티션이 cdhash에 묶이므로 **재빌드마다 Keychain 접근 확인 창**(로그인 암호 + "항상 허용")이 한 번 뜬다. 설치 후 사용 중에는 뜨지 않는다. 불편하면 Apple Development 재발급으로 되돌린다(CN이 같으면 기존 권한 유지 가능성 큼) |
+| D-56 | 파일: 폴더·패키지 포함 시 전체 무시+알림, 읽기 전 크기 합계 검사, type=4만, 잘라내기도 복사, 캐시에 모두 쓴 뒤 클립보드 기록(Mac 파일 URL 항목들 / Windows CF_HDROP+DropEffect 복사) | 폴더 재귀 전송, 잘라내기 시 원본 이동 | D-31 유지, 원격 기기가 원본을 지우는 일 방지, 붙여넣기 시점에 파일이 완성돼 있어야 함 |
+| D-57 | 수신 파일명 sanitize 규칙 고정(NFC, 구분자·예약 문자·제어 문자→`_`, 끝 점·공백 제거, 예약 이름 앞 `_`, 150자/240바이트, 항목 내 대소문자 무시 중복 번호) | 플랫폼별 임의 처리 | 원격에서 온 이름으로 디스크에 쓰므로 경로 탈출·예약 이름·길이 초과를 막는 보안 경계. 두 플랫폼 결과를 같게 |

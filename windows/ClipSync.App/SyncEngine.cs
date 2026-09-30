@@ -221,7 +221,17 @@ sealed class SyncEngine : IDisposable
             var r = await c.ReceiveAsync(it, inline, true, ct);
             if (ct.IsCancellationRequested) return;
             if (r.Entries is null) { SetMessage("서버에서 삭제된 항목입니다"); return; }
-            if (r.Entries.FirstOrDefault(e => e.Type == 3) is { } png)
+            var files = r.Entries.Where(e => e.Type == 4).ToList();
+            if (files.Count > 0)
+            {
+                // 캐시에 모두 쓴 뒤 클립보드에 기록한다 (붙여넣기 시점에 파일이 완성돼 있어야 함, D-56). 이름은 D-57로 정리.
+                var written = await Task.Run(() => WriteIncoming(it.Id, files), ct);
+                if (ct.IsCancellationRequested) return;
+                ring.Add(written.Hash);
+                lastWrittenSeq = ClipboardIO.WriteFiles(listener.Handle, written.Paths, it.Id);
+                Log.Info($"applied files seq={it.Seq} id={it.Id} count={written.Paths.Count}");
+            }
+            else if (r.Entries.FirstOrDefault(e => e.Type == 3) is { } png)
             {
                 // 디코드·DIBV5 생성·픽셀 해시(D-54)는 UI 스레드 밖에서
                 var (dib, hash) = await Task.Run(() =>
@@ -261,6 +271,24 @@ sealed class SyncEngine : IDisposable
         }
     }
 
+    static (List<string> Paths, string Hash) WriteIncoming(string itemId, List<BundleEntry> files)
+    {
+        var names = FileNames.Unique(files.Select(f => f.Name));
+        var dir = Path.GetFullPath(Path.Combine(AppPaths.Root, "incoming", itemId));
+        if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        Directory.CreateDirectory(dir);
+        var paths = new List<string>();
+        foreach (var (name, f) in names.Zip(files))
+        {
+            var full = Path.GetFullPath(Path.Combine(dir, name));
+            if (!string.Equals(Path.GetDirectoryName(full), dir, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("path escape: " + name);   // 경로 탈출 방지(이중 확인)
+            File.WriteAllBytes(full, f.Data);
+            paths.Add(full);
+        }
+        return (paths, FileNames.FilesHash(names.Zip(files, (n, f) => (n, f.Data))));
+    }
+
     /// 최근 항목 메뉴에서 선택: 서버에 본문이 남아 있으면 받아서 복원한다.
     public async void Restore(RecentItem item)
     {
@@ -289,8 +317,12 @@ sealed class SyncEngine : IDisposable
             case SendDecision.Ignore:
                 return;   // 타입 off 등은 조용히 무시 (4.5)
             case SendDecision.Files:
-                Log.Info("files copy ignored (M5b)");
+            {
+                var paths = ClipboardIO.ReadFiles(listener.Handle, out var busy);
+                if (busy) { Log.Error("clipboard busy (OpenClipboard failed)"); return; }
+                if (paths is { Count: > 0 }) _ = SendFiles(paths, c, q);
                 return;
+            }
             case SendDecision.Text:
             {
                 var content = ClipboardIO.ReadText(listener.Handle, out var busy);
@@ -353,6 +385,36 @@ sealed class SyncEngine : IDisposable
             q.Writer.TryWrite(new Outgoing(item, [.. kinds], preview));
         }
         catch (Exception e) { Log.Error("send image: " + e.Message); }
+    }
+
+    /// 파일: 폴더 검사와 크기 합계 검사를 **읽기 전에** 하고, 읽기·해시·봉인은 UI 스레드 밖에서 (D-56).
+    async Task SendFiles(List<string> paths, ServerClient c, Channel<Outgoing> q)
+    {
+        var limit = Config.MaxMediaBytes;
+        try
+        {
+            if (paths.Any(Directory.Exists)) { SetMessage("폴더가 포함된 복사는 보내지 않습니다", alert: true); return; }   // D-31
+            var missing = paths.FirstOrDefault(p => !File.Exists(p));
+            if (missing is not null) { SetMessage("파일을 읽지 못했습니다: " + Path.GetFileName(missing), alert: true); return; }
+            var total = paths.Sum(p => new FileInfo(p).Length);
+            if (total > limit) { SetMessage($"파일이 {limit >> 20} MB를 넘어 보내지 않았습니다 ({total / 1048576.0:0.0} MB)", alert: true); return; }
+            var files = await Task.Run(() => paths.Select(p =>
+            {
+                // Office 등이 연 파일도 읽을 수 있게 공유 모드로 연다
+                using var fs = new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var ms = new MemoryStream();
+                fs.CopyTo(ms);
+                return (Name: Path.GetFileName(p).Normalize(System.Text.NormalizationForm.FormC), Data: ms.ToArray());   // D-25: NFC
+            }).ToList());
+            var hash = FileNames.FilesHash(files.Select(f => (f.Name, f.Data)));
+            if (ring.Contains(hash)) return;
+            ring.Add(hash);
+            var preview = string.Join(", ", files.Select(f => f.Name));
+            var item = await Task.Run(() => c.Prepare(files.Select(f => new BundleEntry(4, f.Name, f.Data)), ["files"], preview,
+                files: files.Select(f => (f.Name, (long)f.Data.Length)).ToList()));
+            q.Writer.TryWrite(new Outgoing(item, ["files"], preview));
+        }
+        catch (Exception e) { SetMessage("파일을 읽지 못했습니다: " + e.Message, alert: true); Log.Error("send files: " + e.Message); }
     }
 
     /// 순서대로 한 개씩. 지수 백오프로 최대 3회, 같은 PreparedItem을 재전송하므로 중복 항목이 생기지 않는다 (idempotent).

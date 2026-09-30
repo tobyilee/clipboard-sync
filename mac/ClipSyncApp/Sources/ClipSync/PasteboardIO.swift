@@ -51,6 +51,25 @@ enum PasteboardIO {
         return nil
     }
 
+    /// Finder 등이 복사한 파일 URL들.
+    static func readFileURLs(_ pb: NSPasteboard = .general) -> [URL] {
+        (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    /// 원격 파일 항목: 캐시에 다 쓴 파일들의 URL을 파일 URL 항목들로 기록한다 (첫 항목에 마커, D-56).
+    @discardableResult
+    static func writeFiles(_ urls: [URL], itemId: String, to pb: NSPasteboard = .general) -> Int {
+        let items = urls.enumerated().map { i, url -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            item.setString(url.absoluteString, forType: .fileURL)
+            if i == 0 { item.setData(Data(hexDecode(itemId) ?? []), forType: markerType) }
+            return item
+        }
+        pb.clearContents()
+        pb.writeObjects(items)
+        return pb.changeCount
+    }
+
     /// 원격 항목을 클립보드에 적용한다. `tiff`는 PNG를 못 읽는 앱을 위한 추가 표현(호출자가 미리 변환).
     /// 반환: 쓴 뒤의 changeCount (감시자가 자기 쓰기를 건너뛰는 데 쓴다).
     @discardableResult

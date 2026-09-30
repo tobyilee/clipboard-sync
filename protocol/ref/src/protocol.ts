@@ -131,3 +131,53 @@ export function decodeBundle(bytes: Uint8Array): BundleEntry[] {
   if (off !== b.length) throw new Error('trailing bytes after last entry');
   return out;
 }
+
+// ---------- 7. 수신 파일명 정리 (spec D-57) ----------
+const RESERVED_STEM = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const MAX_UTF16 = 150;
+const MAX_UTF8 = 240;
+
+const utf8Len = (s: string): number => Buffer.byteLength(s, 'utf8');
+/** 끝의 '.'과 U+0020을 반복 제거 */
+const stripTrailing = (s: string): string => s.replace(/[. ]+$/u, '');
+
+/**
+ * 원격에서 받은 파일 이름을 디스크에 쓸 수 있게 정리한다 (보안 경계, 두 플랫폼 동일 규칙).
+ * NFC → 구분자·예약 문자·제어 문자를 '_' → 앞뒤 U+0020 제거 → 끝의 '.'/U+0020 제거 → 비었으면 'file'
+ * → 예약 이름(확장자 앞, 대소문자 무시)이면 앞에 '_' → 확장자를 보존하며 UTF-16 150 / UTF-8 240 이하로(코드 포인트 경계).
+ */
+export function sanitizeFileName(name: string): string {
+  let s = name.normalize('NFC').replace(/[\/\\<>:"|?*\u0000-\u001f\u007f]/gu, '_');
+  s = s.replace(/^ +| +$/gu, '');
+  s = stripTrailing(s);
+  if (s === '') return 'file';
+  const firstDot = s.indexOf('.');
+  const stem = firstDot >= 0 ? s.slice(0, firstDot) : s;
+  if (RESERVED_STEM.test(stem.replace(/ +$/u, ''))) s = '_' + s;
+  if (s.length <= MAX_UTF16 && utf8Len(s) <= MAX_UTF8) return s;
+  const lastDot = s.lastIndexOf('.');
+  let ext = lastDot > 0 ? s.slice(lastDot) : '';
+  if (ext.length > 20) ext = '';
+  const cps = Array.from(ext ? s.slice(0, lastDot) : s);
+  while (cps.length > 0) {
+    const cand = cps.join('') + ext;
+    if (cand.length <= MAX_UTF16 && utf8Len(cand) <= MAX_UTF8) break;
+    cps.pop();
+  }
+  const base = stripTrailing(cps.join(''));
+  return (base === '' ? 'file' : base) + ext;
+}
+
+/** 한 항목 안의 이름들을 정리하고, 대소문자 무시 중복이면 `이름 (2).ext`처럼 번호를 붙인다 (spec D-57). */
+export function uniqueFileNames(names: string[]): string[] {
+  const used = new Set<string>();
+  return names.map((n) => {
+    const s = sanitizeFileName(n);
+    const dot = s.lastIndexOf('.');
+    const [base, ext] = dot > 0 ? [s.slice(0, dot), s.slice(dot)] : [s, ''];
+    let out = s;
+    for (let i = 2; used.has(out.toLowerCase()); i++) out = `${base} (${i})${ext}`;
+    used.add(out.toLowerCase());
+    return out;
+  });
+}

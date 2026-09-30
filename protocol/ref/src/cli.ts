@@ -51,6 +51,18 @@ if (cmd === 'send' && arg !== undefined) {
     return c;
   });
   console.log(JSON.stringify({ version, ...(await peer.readConfig())?.config }));
+} else if (cmd === 'send-file' && arg) {
+  // send-file [--nfd] [--as NAME] PATH...   (--nfd: 이름을 NFD로 보내 수신 측 NFC 정리를 시험, --as: 보낼 이름 지정)
+  const args = process.argv.slice(3);
+  const nfd = args.includes('--nfd');
+  const asIdx = args.indexOf('--as');
+  const asName = asIdx >= 0 ? args[asIdx + 1] : undefined;
+  const paths = args.filter((a, i) => a !== '--nfd' && a !== '--as' && (asIdx < 0 || i !== asIdx + 1));
+  const files = paths.map((p) => {
+    const name = asName ?? p.split('/').pop()!;
+    return { name: nfd ? name.normalize('NFD') : name, data: readFileSync(p) };
+  });
+  console.log(JSON.stringify(await peer.sendFiles(files, nfd || asName !== undefined)));
 } else if (cmd === 'send-image' && arg) {
   console.log(JSON.stringify(await peer.sendImage(readFileSync(arg))));
 } else if (cmd === 'watch') {
@@ -61,6 +73,6 @@ if (cmd === 'send' && arg !== undefined) {
   await w.opened;
   console.error(`watching as device ${peer.deviceId} (Ctrl+C to stop)`);
 } else {
-  console.error('usage: send TEXT | send-html HTML [PLAIN] | send-image PNG | list | watch | delete ID | config-get | config-set images=on files=off max=20');
+  console.error('usage: send TEXT | send-html HTML [PLAIN] | send-image PNG | send-file [--nfd] [--as NAME] PATH... | list | watch | delete ID | config-get | config-set images=on files=off max=20');
   process.exit(2);
 }

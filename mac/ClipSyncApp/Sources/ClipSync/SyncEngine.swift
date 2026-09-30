@@ -195,7 +195,33 @@ final class SyncEngine {
             guard let entries = r.entries else { setMessage("서버에서 삭제된 항목입니다"); return }
             let plain = entries.first { $0.type == 1 }.map { String(decoding: $0.data, as: UTF8.self) }
             let html = entries.first { $0.type == 2 }.map { String(decoding: $0.data, as: UTF8.self) }
-            if let png = entries.first(where: { $0.type == 3 }).map({ Data($0.data) }) {
+            let files = entries.filter { $0.type == 4 }
+            if !files.isEmpty {
+                // 캐시에 모두 쓴 뒤 클립보드에 기록한다 (붙여넣기 시점에 파일이 완성돼 있어야 함, D-56). 이름은 D-57로 정리.
+                let id = it.id
+                let written = await Task.detached { () -> (urls: [URL], hash: String)? in
+                    let names = uniqueFileNames(files.map(\.name))
+                    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("com.tobylee.clipsync/incoming/\(id)", isDirectory: true)
+                    do {
+                        try? FileManager.default.removeItem(at: dir)
+                        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                        var urls: [URL] = []
+                        for (name, f) in zip(names, files) {
+                            let url = dir.appendingPathComponent(name, isDirectory: false)
+                            guard url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL else { return nil }   // 경로 탈출 방지(이중 확인)
+                            try Data(f.data).write(to: url)
+                            urls.append(url)
+                        }
+                        return (urls, filesHash(zip(names, files).map { ($0.0, $0.1.data) }))
+                    } catch { return nil }
+                }.value
+                if Task.isCancelled { return }
+                guard let written else { setMessage("파일을 캐시에 쓰지 못했습니다", notify: true); return }
+                ring.add(written.hash)
+                lastChangeCount = PasteboardIO.writeFiles(written.urls, itemId: it.id)
+                Log.info("applied files seq=\(it.seq) id=\(it.id) count=\(written.urls.count)")
+            } else if let png = entries.first(where: { $0.type == 3 }).map({ Data($0.data) }) {
                 // 픽셀 해시(D-54)와 TIFF 변환은 메인 스레드 밖에서
                 let (hash, tiff) = await Task.detached { (imagePixelHash(png), tiffData(fromPNG: png)) }.value
                 if Task.isCancelled { return }
@@ -244,8 +270,8 @@ final class SyncEngine {
         case .ignore:
             return   // 타입 off 등은 조용히 무시 (4.5)
         case .files:
-            Log.info("files copy ignored (M5b)")
-            return
+            let urls = PasteboardIO.readFileURLs(pb)
+            if !urls.isEmpty { sendFiles(urls, client: c) }
         case .text:
             guard let content = PasteboardIO.readText(pb) else { return }
             sendText(content, client: c)
@@ -299,6 +325,49 @@ final class SyncEngine {
             let prepared = await Task.detached { try? c.prepare(entries: entries, kinds: kinds, previewText: text?.plain, imageSize: prep.size) }.value
             guard let prepared else { return }
             self.enqueue(prepared, kinds: kinds, preview: text?.plain.map(previewOf) ?? "이미지 \(prep.size.w)×\(prep.size.h)", client: c)
+        }
+    }
+
+    /// 파일: 폴더·패키지 검사와 크기 합계 검사를 **읽기 전에** 하고, 읽기·해시·봉인은 메인 스레드 밖에서 (D-56).
+    private func sendFiles(_ urls: [URL], client c: ServerClient) {
+        let limit = config.maxMediaBytes
+        Task { [weak self] in
+            enum Outcome { case folder, tooLarge(Int), unreadable(String), ok([(name: String, data: [UInt8])]) }
+            let outcome = await Task.detached { () -> Outcome in
+                var total = 0
+                for u in urls {
+                    let v = try? u.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .isRegularFileKey, .fileSizeKey])
+                    if v?.isDirectory == true || v?.isPackage == true { return .folder }
+                    guard v?.isRegularFile == true else { return .unreadable(u.lastPathComponent) }
+                    total += v?.fileSize ?? 0
+                }
+                if total > limit { return .tooLarge(total) }
+                var files: [(name: String, data: [UInt8])] = []
+                for u in urls {
+                    guard let d = try? Data(contentsOf: u) else { return .unreadable(u.lastPathComponent) }
+                    files.append((u.lastPathComponent.precomposedStringWithCanonicalMapping, [UInt8](d)))   // D-25: NFC
+                }
+                return .ok(files)
+            }.value
+            guard let self else { return }
+            switch outcome {
+            case .folder:
+                self.setMessage("폴더나 패키지가 포함된 복사는 보내지 않습니다", notify: true)   // D-31
+            case .tooLarge(let total):
+                self.setMessage("파일이 \(limit >> 20) MB를 넘어 보내지 않았습니다 (\(String(format: "%.1f", Double(total) / 1048576)) MB)", notify: true)
+            case .unreadable(let name):
+                self.setMessage("파일을 읽지 못했습니다: \(name)", notify: true)
+            case .ok(let files):
+                let hash = filesHash(files)
+                if self.ring.contains(hash) { return }
+                self.ring.add(hash)
+                let entries = files.map { BundleEntry(type: 4, name: $0.name, data: $0.data) }
+                let meta = files.map { (name: $0.name, size: $0.data.count) }
+                let preview = files.map(\.name).joined(separator: ", ")
+                let prepared = await Task.detached { try? c.prepare(entries: entries, kinds: ["files"], previewText: preview, files: meta) }.value
+                guard let prepared else { return }
+                self.enqueue(prepared, kinds: ["files"], preview: preview, client: c)
+            }
         }
     }
 

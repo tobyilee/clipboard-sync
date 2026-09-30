@@ -115,7 +115,8 @@ public final class ServerClient: Sendable {
         public var bodySize: Int { sealedBody.count }
     }
 
-    public func prepare(entries: [BundleEntry], kinds: [String], previewText: String? = nil, imageSize: (w: Int, h: Int)? = nil) throws -> PreparedItem {
+    public func prepare(entries: [BundleEntry], kinds: [String], previewText: String? = nil, imageSize: (w: Int, h: Int)? = nil,
+                        files: [(name: String, size: Int)]? = nil) throws -> PreparedItem {
         let id = try randomBytes(16)
         let dev = hexDecode(deviceId)!
         let createdAt = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -123,6 +124,7 @@ public final class ServerClient: Sendable {
         var header: [String: Any] = ["v": 1, "kinds": kinds, "body_plain_size": body.count]
         if let previewText { header["preview"] = previewOf(previewText) }
         if let imageSize { header["image"] = ["w": imageSize.w, "h": imageSize.h] }
+        if let files { header["files"] = files.map { ["name": $0.name, "size": $0.size] as [String: Any] } }
         let headerJSON = try JSONSerialization.data(withJSONObject: header)
         return PreparedItem(
             id: uuidHex(id),

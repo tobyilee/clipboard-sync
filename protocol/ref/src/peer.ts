@@ -105,6 +105,13 @@ export class Peer {
     return this.send([{ type: 3, name: '', data: png }], ['image'], undefined, { image: size });
   }
 
+  /** 파일 항목 (type=4만, 파일명은 NFC; `rawNames`면 정규화하지 않아 수신 측 정리를 시험). */
+  sendFiles(files: { name: string; data: Uint8Array }[], rawNames = false) {
+    const named = files.map((f) => ({ ...f, name: rawNames ? f.name : f.name.normalize('NFC') }));
+    return this.send(named.map((f) => ({ type: 4, name: f.name, data: f.data })), ['files'], named.map((f) => f.name).join(', '),
+      { files: named.map((f) => ({ name: f.name, size: f.data.length })) });
+  }
+
   /** 복호화한 설정. 서버에 없으면 null (= 텍스트만). */
   async readConfig(): Promise<{ version: number; config: VaultConfig } | null> {
     const c = await this.getConfig();

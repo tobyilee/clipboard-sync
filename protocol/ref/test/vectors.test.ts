@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
-  configAad, decodeBundle, deriveKeys, encodeBundle, formatUuid, itemAad, normalizePassphrase, open, parseUuid, previewOf, seal, sealWithNonce, uuidHex,
+  configAad, decodeBundle, deriveKeys, encodeBundle, formatUuid, itemAad, normalizePassphrase, open, parseUuid, previewOf, sanitizeFileName, seal, sealWithNonce, uniqueFileNames, uuidHex,
 } from '../src/protocol.ts';
 import { buildVectors } from '../src/vectors.ts';
 
@@ -97,4 +97,16 @@ test('bundle_invalid: every entry must error', () => {
 
 test('previews: NFC first, then 200 code points', () => {
   for (const p of V.previews) assert.equal(previewOf(p.input), p.output, p.name);
+});
+
+test('file names: sanitize rules (D-57)', () => {
+  for (const f of V.file_names) assert.equal(sanitizeFileName(f.input), f.expect, f.name);
+  for (const f of V.file_name_sets) assert.deepEqual(uniqueFileNames(f.inputs), f.expect, f.name);
+  // 불변식: 결과는 구분자·예약 문자·제어 문자가 없고 한도 안이며, 정리 결과를 다시 정리해도 같다
+  for (const f of V.file_names) {
+    assert.ok(!/[\/\\<>:"|?*\u0000-\u001f\u007f]/.test(f.expect), f.name);
+    assert.ok(f.expect.length <= 150 && Buffer.byteLength(f.expect) <= 240, f.name);
+    assert.ok(f.expect !== '' && !f.expect.endsWith('.') && !f.expect.endsWith(' '), f.name);
+    assert.equal(sanitizeFileName(f.expect), f.expect, f.name + ' idempotent');
+  }
 });

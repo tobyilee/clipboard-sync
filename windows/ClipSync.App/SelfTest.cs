@@ -85,6 +85,25 @@ static class SelfTest
             return ImageCodec.Normalize(raw) is { } n && Imaging.PixelHash(n.Pixels) == Imaging.PixelHash(ramp) ? null : "hash differs";
         });
 
+        // 파일: 한글·이모지 이름으로 CF_HDROP + Preferred DropEffect 쓰기/읽기, 적대적 이름 정리
+        var tmp = Path.Combine(Path.GetTempPath(), "clipsync-selftest");
+        Check("CF_HDROP round-trip (Korean/emoji names) + DropEffect copy", () =>
+        {
+            Directory.CreateDirectory(tmp);
+            string[] paths = [Path.Combine(tmp, "한글 파일 😀.txt"), Path.Combine(tmp, "b.bin")];
+            foreach (var p in paths) File.WriteAllText(p, "x");
+            ClipboardIO.WriteFiles(hwnd, paths, id);
+            var back = ClipboardIO.ReadFormat(hwnd, Native.CF_HDROP) is { } d ? HDrop.Parse(d) : [];
+            var effect = ClipboardIO.ReadFormat(hwnd, ClipboardIO.FmtDropEffect) is { Length: >= 4 } e ? BitConverter.ToInt32(e) : -1;
+            return back.SequenceEqual(paths) && effect == 1 ? null : $"paths={string.Join("|", back)} effect={effect}";
+        });
+        Check("hostile file name stays inside folder", () =>
+        {
+            var name = FileNames.Sanitize(@"..\..\CON.txt");
+            var full = Path.GetFullPath(Path.Combine(tmp, name));
+            return Path.GetDirectoryName(full) == Path.GetFullPath(tmp) && !name.Contains('\\') ? null : "escaped: " + name;
+        });
+
         var settings = Settings.Load();
         string? pass = null;
         try { pass = CredentialStore.Load(); } catch { /* 아래에서 skipped */ }

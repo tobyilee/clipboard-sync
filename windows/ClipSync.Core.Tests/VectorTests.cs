@@ -164,6 +164,16 @@ public class VectorTests
     }
 
     [Fact]
+    public void FileNames_()
+    {
+        foreach (var f in V.GetProperty("file_names").EnumerateArray())
+            Assert.True(FileNames.Sanitize(S(f, "input")) == S(f, "expect"), S(f, "name") + ": got " + FileNames.Sanitize(S(f, "input")));
+        foreach (var f in V.GetProperty("file_name_sets").EnumerateArray())
+            Assert.Equal(f.GetProperty("expect").EnumerateArray().Select(e => e.GetString()!).ToList(),
+                         FileNames.Unique(f.GetProperty("inputs").EnumerateArray().Select(e => e.GetString()!)));
+    }
+
+    [Fact]
     public void Previews()
     {
         foreach (var p in V.GetProperty("previews").EnumerateArray())

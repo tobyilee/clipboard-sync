@@ -38,6 +38,7 @@ static class ClipboardIO
     public static readonly uint FmtHtml = Native.RegisterClipboardFormat("HTML Format");
     public static readonly uint FmtPng = Native.RegisterClipboardFormat("PNG");
     public static readonly uint FmtNoCloud = Native.RegisterClipboardFormat("CanUploadToCloudClipboard");
+    public static readonly uint FmtDropEffect = Native.RegisterClipboardFormat("Preferred DropEffect");
 
     public sealed record Content(string? Plain, string? Html);
 
@@ -138,6 +139,24 @@ static class ClipboardIO
         finally { Native.CloseClipboard(); }
     }
 
+    /// Explorer 등이 복사한 파일 경로들 (CF_HDROP). 잘라내기(DropEffect=이동)도 복사로 취급한다 (D-56).
+    public static List<string>? ReadFiles(IntPtr hwnd, out bool busy)
+    {
+        busy = false;
+        if (!OpenWithRetry(hwnd)) { busy = true; return null; }
+        try
+        {
+            if (Native.IsClipboardFormatAvailable(FmtMarker)) return null;   // 판별 뒤 우리 항목으로 바뀌었으면 읽지 않는다
+            return Native.IsClipboardFormatAvailable(Native.CF_HDROP) && GetBytes(Native.CF_HDROP) is { } d ? HDrop.Parse(d) : null;
+        }
+        finally { Native.CloseClipboard(); }
+    }
+
+    /// 원격 파일 항목: 캐시에 다 쓴 파일 경로들을 CF_HDROP + Preferred DropEffect=복사(1)로 기록 (D-56). 반환: 시퀀스 번호.
+    public static uint WriteFiles(IntPtr hwnd, IReadOnlyList<string> paths, string itemIdHex) =>
+        WriteRaw(hwnd, [(Native.CF_HDROP, HDrop.Build(paths)), (FmtDropEffect, BitConverter.GetBytes(1)),
+                        (FmtMarker, Convert.FromHexString(itemIdHex)), (FmtNoCloud, BitConverter.GetBytes(0))]);
+
     /// 마커 유무와 관계없이 현재 텍스트/HTML fragment (D-49 비교와 자체 테스트용).
     public static Content? ReadRaw(IntPtr hwnd)
     {
@@ -198,7 +217,11 @@ static class ClipboardIO
         if (items.Count == 0) throw new InvalidOperationException("no supported entries");
         items.Add((FmtMarker, Convert.FromHexString(itemIdHex)));
         items.Add((FmtNoCloud, BitConverter.GetBytes(0)));
+        return WriteRaw(hwnd, items);
+    }
 
+    static uint WriteRaw(IntPtr hwnd, IReadOnlyList<(uint Fmt, byte[] Data)> items)
+    {
         if (!OpenWithRetry(hwnd)) throw new InvalidOperationException("OpenClipboard failed after retries");
         try
         {
